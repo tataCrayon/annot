@@ -1,0 +1,48 @@
+{
+  "name": "annot",
+  "version": "0.1.0",
+  "description": "Annotate any agent skill: turn SKILL.md into an anchored flow graph you can inspect, diff and edit by natural language.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "annot": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./parse": "./src/parse.ts",
+    "./flow": "./src/flow.ts",
+    "./drift": "./src/drift.ts",
+    "./audit": "./src/audit.ts",
+    "./context": "./src/context.ts",
+    "./manifest": "./src/manifest.ts",
+    "./render": "./src/render.ts",
+    "./visual": "./src/visual.ts",
+    "./browser": "./src/browser.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "agent-skills",
+    "skill",
+    "flowchart",
+    "annotate",
+    "claude-code",
+    "deepseek-harness",
+    "eval"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "sandbox": "bash sandbox/run.sh",
+    "annotate": "node src/cli.ts annotate",
+    "check": "node src/cli.ts check",
+    "audit": "node src/cli.ts audit",
+    "verify": "node src/cli.ts verify",
+    "render": "node src/cli.ts render"
+  }
+}

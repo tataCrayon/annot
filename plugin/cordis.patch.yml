@@ -1,0 +1,22 @@
+# annot-dsh bundle patch
+#
+# One `insert`: the Host half registers three read-only routes under
+# /api/annot/*. The reads are cheap and side-effect free, so they are safe to
+# expose to any paired-or-loopback caller; the writes (`annotate`) stay in the
+# CLI, where a human runs them on purpose.
+#
+# Notes for whoever edits this next:
+#   - `dsh plugin --profile <name> add <dir>` appends this bundle to the stack
+#     and the boot adds exactly this row. Do NOT also add a manual mount line
+#     to the profile's cordis.patch.yml: that mounts the routes twice and fails
+#     the whole plugin tree with "duplicate prefix route".
+#   - the route prefix is `annot`; the client half registers into
+#     `sidebar.panellist` + `main` under the same id.
+- insert:
+    - id: annot
+      name: 'annot-dsh'
+      # Local checkout install: point at the repo's own entry point so the panel
+      # and the command line are provably the same engine. A published install
+      # leaves this unset and picks up `annot` from PATH instead.
+      config:
+        cli: 'D:/Projects/flp/vibeskill/src/cli.ts'

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Annot",
+    "description": "把任意 skill 读成带源码锚点的流程图，报出抽取器读错了哪些 skill，并指出每个方块对应哪几行原文。",
+    "detail": "docs/DETAIL.md"
+  }
+}

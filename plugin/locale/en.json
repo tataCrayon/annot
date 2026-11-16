@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Annot",
+    "description": "Reads any skill as a flow graph with source anchors, reports which skills the extractor misread, and shows where each block's lines live.",
+    "detail": "docs/DETAIL.md"
+  }
+}

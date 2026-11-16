@@ -1,0 +1,19 @@
+node_modules/
+.venv/
+dist/
+out/
+*.log
+.DS_Store
+.env
+.env.*
+!/.env.example
+
+# annot sandbox: never commit a test HOME or copied skill trees
+sandbox/
+.sandbox/
+tmp/
+data/
+
+# ad-hoc probes: rendered pages and screenshots used while tuning the extractor
+.probe/
+shots/
