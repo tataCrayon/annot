@@ -24,6 +24,8 @@
   },
   "files": [
     "src",
+    "tools",
+    "test/fixtures",
     "README.md",
     "LICENSE"
   ],
@@ -37,7 +39,7 @@
     "eval"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts test/*.test.js",
     "sandbox": "bash sandbox/run.sh",
     "annotate": "node src/cli.ts annotate",
     "check": "node src/cli.ts check",

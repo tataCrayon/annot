@@ -320,10 +320,17 @@ function flowContent(doc: FlowDoc): string {
 
 function report(doc: FlowDoc): string {
   const s = doc.stats;
+  // Two different questions, and conflating them is how a reader ends up
+  // thinking a skill with four declared forks has none: `forks` counts the
+  // conditionals the author wrote, `bound` counts the ones whose other end
+  // landed on a node. A skill can have forks and zero bound edges — that is
+  // the "unresolved branch" state, not "no branches".
+  const forks = doc.nodes.reduce((total, node) => total + node.branches.length, 0);
+  const bound = doc.edges.filter((e) => e.kind === 'branch').length;
   const lines = [
     `annotated ${doc.skill}`,
     `  source      ${doc.source.file} (${doc.source.lines} lines, sha ${doc.source.sha.slice(0, 12)})`,
-    `  nodes       ${doc.nodes.length}  edges ${doc.edges.length}  branches ${doc.edges.filter((e) => e.kind === 'branch').length}`,
+    `  nodes       ${doc.nodes.length}  edges ${doc.edges.length}  forks ${forks} (bound ${bound}, unresolved ${forks - bound})`,
     `  by type     stage ${s.byType.stage} · decision ${s.byType.decision} · gate ${s.byType.gate} · artifact ${s.byType.artifact} · external ${s.byType.external}`,
     `  to confirm  ${s.lowConfidence} node(s) below 60% confidence`,
   ];
