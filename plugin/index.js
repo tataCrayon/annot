@@ -1,7 +1,7 @@
 /**
  * Host half of annot-dsh.
  *
- * Three read-only routes, and no engine code in this package at all: each route
+ * Five read-only routes, and no engine code in this package at all: each route
  * runs the annot CLI and returns its JSON. That is the whole point of the
  * "one engine, two shells" split — the DSH panel and `annot` on the command
  * line must not be able to disagree, and the cheapest way to guarantee that is
@@ -31,6 +31,7 @@ export const inject = ['webServer'];
 export const ROUTES = {
   status: '/api/annot/status',
   list: '/api/annot/list',
+  search: '/api/annot/search',
   flow: '/api/annot/flow',
   audit: '/api/annot/audit',
 };
@@ -95,7 +96,12 @@ function writeJson(res, status, body) {
 function runCli(cli, args, options = {}) {
   const isScript = /\.[cm]?[jt]sx?$/i.test(cli);
   const file = isScript ? process.execPath : cli;
-  const argv = [...(isScript ? [...(options.nodeArgs ?? []), cli] : []), ...args, '--json'];
+  // `--json` has to go BEFORE a `--` separator: everything after `--` is a
+  // positional by POSIX convention, so appending it at the end silently turned
+  // the flag into another root directory and the reply came back as prose.
+  const separator = args.indexOf('--');
+  const withJson = separator >= 0 ? [...args.slice(0, separator), '--json', ...args.slice(separator)] : [...args, '--json'];
+  const argv = [...(isScript ? [...(options.nodeArgs ?? []), cli] : []), ...withJson];
   return new Promise((resolve) => {
     execFile(
       file,
@@ -168,14 +174,32 @@ function makeRoutes(config, logger) {
    * and a full rescan per click would double the cost of every open.
    */
   const scanned = { at: 0, files: new Set() };
+  const invalidateScan = () => {
+    scanned.at = 0;
+  };
+
+  /**
+   * Scans at most once per 10s, and at most once at a time: the panel asks for a
+   * flow per click, and two clicks in quick succession would otherwise run two
+   * full library walks concurrently for the same answer.
+   */
+  let scanInFlight = null;
   const scannedFiles = async () => {
     if (Date.now() - scanned.at < 10_000) return scanned.files;
-    const result = await runCli(cli, ['list', ...roots()], { nodeArgs, cwd: config?.cwd });
-    if (result.ok && Array.isArray(result.value.skills)) {
-      scanned.files = new Set(result.value.skills.map((skill) => skill.file));
-      scanned.at = Date.now();
-    }
-    return scanned.files;
+    if (scanInFlight) return scanInFlight;
+    scanInFlight = (async () => {
+      try {
+        const result = await runCli(cli, ['list', ...roots()], { nodeArgs, cwd: config?.cwd });
+        if (result.ok && Array.isArray(result.value.skills)) {
+          scanned.files = new Set(result.value.skills.map((skill) => skill.file));
+          scanned.at = Date.now();
+        }
+        return scanned.files;
+      } finally {
+        scanInFlight = null;
+      }
+    })();
+    return scanInFlight;
   };
 
   const guard = (req, res, method) => {
@@ -209,7 +233,37 @@ function makeRoutes(config, logger) {
       path: ROUTES.list,
       handler: async (req, res) => {
         if (!guard(req, res, 'GET')) return;
+        const url = new URL(req.url ?? '/', 'http://x');
+        // `?fresh=1` drops the scan cache. The panel's refresh button needs a
+        // way to say "a skill was just added; look again", otherwise the only
+        // remedy for a stale list is waiting ten seconds or reloading the page.
+        if (url.searchParams.get('fresh') === '1') invalidateScan();
         const result = await runCli(cli, ['list', ...roots()], { nodeArgs, cwd: config?.cwd });
+        if (!result.ok) {
+          logger.warn(result.message);
+          writeJson(res, 503, { error: result.message, cli });
+          return;
+        }
+        writeJson(res, 200, result.value);
+      },
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.search,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return;
+        const url = new URL(req.url ?? '/', 'http://x');
+        const query = (url.searchParams.get('q') ?? '').trim();
+        if (query === '') {
+          writeJson(res, 400, { error: 'expected ?q=<text>' });
+          return;
+        }
+        const body = url.searchParams.get('body') === '1' || url.searchParams.get('body') === 'true';
+        // `--` separates the query from the roots: without it the CLI has to
+        // guess which positional is which, and a query word that happens to be
+        // a directory name would silently become a root.
+        const args = ['search', ...(body ? ['--body'] : []), query, '--', ...roots()];
+        const result = await runCli(cli, args, { nodeArgs, cwd: config?.cwd });
         if (!result.ok) {
           logger.warn(result.message);
           writeJson(res, 503, { error: result.message, cli });
@@ -233,7 +287,13 @@ function makeRoutes(config, logger) {
         const files = await scannedFiles();
         const known = [...files].some((file) => file === wanted || file === `${wanted}/SKILL.md` || file === `${wanted}\\SKILL.md`);
         if (!known) {
-          writeJson(res, 422, { error: 'not a skill the current scan produced; refresh the list and retry' });
+          // The one likely cause is a skill that appeared after the last scan.
+          // Say so and mark it retryable: an error the user cannot act on is
+          // just a dead end with an explanation attached.
+          writeJson(res, 422, {
+            error: '这个 skill 不在最近一次扫描的结果里。点「刷新」重新扫描后再试。',
+            retryable: true,
+          });
           return;
         }
         const result = await runCli(cli, ['annotate', wanted, '--out', tempOutFor(wanted)], { nodeArgs, cwd: config?.cwd });

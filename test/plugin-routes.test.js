@@ -119,6 +119,22 @@ test('the routes drive the real CLI and return its document', async () => {
       assert.equal(typeof node.x, 'number');
       assert.equal(typeof node.y, 'number');
     }
+
+    // Search through the route, because the panel's only discovery path is this
+    // call: a route that works but ranks nothing is the same as no search.
+    const hit = await call(byPath[ROUTES.search], `${ROUTES.search}?q=demo`);
+    assert.equal(hit.status, 200, JSON.stringify(hit.body));
+    assert.deepEqual(hit.body.matches.map((m) => m.name), ['demo']);
+    assert.equal(hit.body.body, false, 'the default tier must not read the body');
+
+    const deep = await call(byPath[ROUTES.search], `${ROUTES.search}?q=命中&body=1`);
+    assert.equal(deep.status, 200, JSON.stringify(deep.body));
+    assert.equal(deep.body.body, true);
+    assert.deepEqual(deep.body.matches.map((m) => m.name), ['demo'], 'a body-only match must be findable in deep mode');
+
+    const miss = await call(byPath[ROUTES.search], `${ROUTES.search}?q=zzz-nothing`);
+    assert.equal(miss.status, 200);
+    assert.deepEqual(miss.body.matches, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

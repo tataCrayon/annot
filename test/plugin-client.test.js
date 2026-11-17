@@ -122,5 +122,67 @@ test('the panel never assumes a node has branches or headings', () => {
   // Defensive shape: a doc from an older schema may lack either array, and the
   // detail pane must not throw on it. The accesses are guarded by `|| []`.
   assert.match(SOURCE, /node\.anchor\.heading \|\| \[\]/);
-  assert.match(SOURCE, /node\.branches\.length/);
+  assert.match(SOURCE, /Array\.isArray\(node\.branches\)/);
+});
+
+test('no CSS shorthand uses `inherit` as a font family', () => {
+  // `font: 13px/1.5 inherit` is invalid: CSS-wide keywords may not appear as a
+  // family inside the shorthand, so the parser drops the WHOLE declaration and
+  // the panel silently inherits the wrong metrics. Only standalone
+  // `font-family: inherit` or explicit sizes are allowed.
+  const shorthands = [...SOURCE.matchAll(/font:\s*([^;'"`]+)/g)].map((m) => m[1].trim());
+  for (const value of shorthands) {
+    assert.doesNotMatch(value, /\binherit\b/, `invalid font shorthand: font: ${value}`);
+  }
+});
+
+test('every theme variable the panel references is a --dsw-alias token', () => {
+  // A literal color in host chrome breaks dark theme; a non-token variable does
+  // not exist at all. The node palette is artwork and uses literals on purpose,
+  // so this only checks what is written as a `var(...)`.
+  const vars = [...SOURCE.matchAll(/var\((--[a-z0-9-]+)/gi)].map((m) => m[1]);
+  assert.ok(vars.length >= 5, 'the panel should be using theme tokens');
+  for (const name of vars) {
+    assert.match(name, /^--dsw-alias-/, `${name} is not a host theme token`);
+  }
+});
+
+test('the panel draws a low-confidence marker, not only the branch badge', () => {
+  // DETAIL.md promises an amber dot below 60%; the HTML artifact draws one. A
+  // panel that only shows unbound branches silently hides half the signal.
+  assert.match(SOURCE, /node\.confidence\s*<\s*0\.6/);
+  assert.match(SOURCE, /['"]data-role['"]:\s*['"]low-confidence['"]/);
+});
+
+test('apply reports a registration failure instead of disappearing', () => {
+  // A panel that never appears is indistinguishable from a bundle that is not
+  // installed. The console line is the only diagnosable evidence.
+  assert.match(SOURCE, /catch\s*\(error\)\s*\{[\s\S]{0,200}console\.warn\([^)]*annot/i);
+});
+
+test('the sidebar row does not collide with order 40', () => {
+  // Another installed bundle already uses 40; equal order sorts unpredictably.
+  const order = /order:\s*(\d+)/.exec(SOURCE);
+  assert.ok(order, 'the row declares no order');
+  assert.notEqual(Number(order[1]), 40);
+});
+
+test('a superseded response can never overwrite a newer one', () => {
+  // The specific bug: clear the search box, and a slow in-flight search
+  // repopulates results — breaking the "empty box means everything" promise.
+  assert.match(SOURCE, /tickets/, 'no request ticket state');
+  assert.match(SOURCE, /stale\('search',\s*ticket\)/, 'search does not check its ticket before applying');
+  assert.match(SOURCE, /stale\('flow',\s*ticket\)/, 'flow does not check its ticket before applying');
+});
+
+test('the panel shows where a graph came from', () => {
+  // Without the source hash, "is this graph current?" is unanswerable in the UI.
+  assert.match(SOURCE, /doc\.source\.sha\.slice\(0,\s*10\)/);
+  assert.match(SOURCE, /doc\.source\.generated_at/);
+});
+
+test('search results carry the skill description', () => {
+  // 76 skills whose only visible difference is the folder name is not a list a
+  // human can choose from.
+  assert.match(SOURCE, /m\.description/);
 });

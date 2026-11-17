@@ -70,9 +70,10 @@ async function call(route, req) {
   return res;
 }
 
-test('applying registers the four documented routes under one effect', () => {
+test('applying registers the five documented routes under one effect', () => {
   const { routes, effectName } = mount();
   assert.deepEqual(routes.map((r) => r.path).sort(), Object.values(ROUTES).sort());
+  assert.equal(routes.length, 5);
   assert.match(effectName, /annot/i, 'the effect must be named so a failing mount is traceable');
 });
 
@@ -132,6 +133,17 @@ test('flow requires a path and does not accept an empty one', async () => {
   assert.equal(missing.status, 400);
 
   const blank = await call(route, fakeReq(`${route.path}?path=%20`));
+  assert.equal(blank.status, 400);
+});
+
+test('search requires a query and never treats an empty one as "everything"', async () => {
+  const { routes } = mount({ cli: 'definitely-not-a-real-annot-binary' });
+  const route = routes.find((r) => r.path === ROUTES.search);
+
+  const missing = await call(route, fakeReq(route.path));
+  assert.equal(missing.status, 400);
+
+  const blank = await call(route, fakeReq(`${route.path}?q=%20%20`));
   assert.equal(blank.status, 400);
 });
 

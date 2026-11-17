@@ -16,6 +16,7 @@
     "./flow": "./src/flow.ts",
     "./drift": "./src/drift.ts",
     "./audit": "./src/audit.ts",
+    "./search": "./src/search.ts",
     "./context": "./src/context.ts",
     "./manifest": "./src/manifest.ts",
     "./render": "./src/render.ts",

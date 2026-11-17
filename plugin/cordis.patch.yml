@@ -1,6 +1,6 @@
 # annot-dsh bundle patch
 #
-# One `insert`: the Host half registers three read-only routes under
+# One `insert`: the Host half registers five read-only routes under
 # /api/annot/*. The reads are cheap and side-effect free, so they are safe to
 # expose to any paired-or-loopback caller; the writes (`annotate`) stay in the
 # CLI, where a human runs them on purpose.
@@ -15,8 +15,11 @@
 - insert:
     - id: annot
       name: 'annot-dsh'
-      # Local checkout install: point at the repo's own entry point so the panel
-      # and the command line are provably the same engine. A published install
-      # leaves this unset and picks up `annot` from PATH instead.
+      # This bundle is `private: true` and installed by link from the repo it
+      # lives in, so pointing at the repo's own entry point is correct here and
+      # makes "the panel and the command line are the same engine" checkable.
+      # A published bundle must drop this block and let `cli` default to `annot`
+      # on PATH: an absolute path baked into the package points at a directory
+      # that does not exist on anyone else's machine.
       config:
         cli: 'D:/Projects/flp/vibeskill/src/cli.ts'

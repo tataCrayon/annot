@@ -2,7 +2,7 @@
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `audit` / `context` / `verify` / `render` 七个命令，55 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，105 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -200,6 +200,7 @@ annot verify .annot/my-skill/my-skill.flow.json
 | `annot annotate <dir\|SKILL.md>` | 产出 `flow.json` + `html` + `annotation.json`（原子写入） |
 | `annot check <flow.json>` | 对比当前 SKILL.md，报漂移；exit 0/1 |
 | `annot list <root...>` | 列 skill，同名按 rank 去重 |
+| `annot search <query...> -- <root...>` | 按名字/描述/标题找 skill，`--body` 加搜正文 |
 | `annot audit <root...>` | 批量体检，按"抽得有多差"排序 |
 | `annot context <flow.json> <node-id>` | 交出编辑所需的精确切片与约束 |
 | `annot verify <flow.json\|html>` | 真浏览器验收；exit 0/1/2（2 = 跳过） |
@@ -207,11 +208,22 @@ annot verify .annot/my-skill/my-skill.flow.json
 
 `annotate` 会额外写一个 `annotation.json`：记录源文件路径（**相对清单自身**，所以产物目录可以整个搬走）、生成时的源哈希、以及每个产物的字节数与 sha256。`check` 靠它精确找回源文件——早先版本靠 `../SKILL.md` 猜，用 `--out` 就一定猜错。
 
+### 搜索分两层，因为宿主也是分两层读的
+
+```bash
+annot search 审计 -- ~/.agents/skills          # 默认：name · 描述 · 标题
+annot search 审计 --body -- ~/.agents/skills   # 加搜正文
+```
+
+宿主每轮只把 `name` + `description` 摆给模型，正文要等模型**已经决定**打开才读。所以默认层命中的是"模型本来就能看到的信息"，而正文命中是"模型必须先知道答案才能看到的"——两层混在一起报，等于假装工具知道得比模型多。`--body` 是显式选择，报告里会写明这一屏搜的是哪一层。
+
+查询按 **AND** 拆词：`审计 Agent` 只返回两个词都命中的 skill。改成 OR 的话，四十个结果和没有搜索是一样的。全部匹配逻辑是确定性字符串包含，不 stemming、不模糊距离、不调模型——同一个查询永远给同一份结果，这是搜索结果敢放到评审面前的前提。
+
 ---
 
 ## DSH 插件壳：`plugin/`
 
-命令行之外，同一个引擎还有一块宿主内的面板。`plugin/` 是一个 DSH bundle：Host 半边注册四个只读路由，Client 半边在侧边栏注册一个 `Annot` 面板 + 主区页面。
+命令行之外，同一个引擎还有一块宿主内的面板。`plugin/` 是一个 DSH bundle：Host 半边注册五个只读路由，Client 半边在侧边栏注册一个 `Annot` 面板 + 主区页面。
 
 ```bash
 # 本机安装（profile 里会多一行 bundle）
@@ -219,7 +231,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 # 或在 GUI 的 Plugins 页面点 Add plugin 选这个目录
 ```
 
-装上之后：侧边栏出现 **Annot** → 左边选 skill → 右边看到同一张图、同一份锚点、同一份置信度。
+装上之后：侧边栏出现 **Annot** → 搜索框打 `审计` → 点结果 → 右边看到同一张图、同一份锚点、同一份置信度。
 
 它**不是第二套实现**：面板每一次点击都会 exec 一次同一个 `annot` 命令行，所以两边不可能给出不同的图。这是"一个引擎、多个外壳"能被验证的唯一形式。路由：
 
@@ -227,12 +239,13 @@ dsh plugin --profile <profile> add <repo>/plugin
 |---|---|
 | `GET api/annot/status` | CLI 是否可用、扫描哪些根 |
 | `GET api/annot/list` | 按宿主同样的 rank 规则列 skill |
+| `GET api/annot/search?q=<text>[&body=1]` | 搜 skill；默认不搜正文 |
 | `GET api/annot/flow?path=<SKILL.md>` | 一张图（含服务端算好的布局） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（总分是完整的，只有表格被截断） |
 
-四条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 这一写操作**不在路由里**。
+五条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 这一写操作**不在路由里**。
 
-`plugin/` 有 12 个测试，包括"路由真的驱动了真 CLI"和"扫描范围外的路径必须 422"。
+`plugin/` 有 26 个测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"。
 
 ---
 
@@ -251,10 +264,11 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 67 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 105 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果
+node tools/probe-panel.ts                    # 打开运行中的 GUI，报告面板是否可见
 ```
 
 要求 Node ≥ 22.18（原生 TypeScript 类型剥离）。无构建步骤、零运行时依赖。

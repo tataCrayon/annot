@@ -19,6 +19,7 @@ import { discoverSkills, DEFAULT_RANKS, type RootSpec } from './discover.ts';
 import { buildFlow } from './flow.ts';
 import { parseSkill, slugify } from './parse.ts';
 import { layoutNodes, renderHtml } from './render.ts';
+import { formatSearch, searchSkills } from './search.ts';
 import type { FlowDoc, Sidecar } from './types.ts';
 
 const USAGE = `annot — annotate any agent skill
@@ -27,6 +28,7 @@ Usage
   annot annotate <skill-dir|SKILL.md> [--out <dir>] [--sidecar <json>] [--json]
   annot check <flow.json> [--skill <SKILL.md>] [--json]
   annot list <root...> [--json]
+  annot search <query...> <root...> [--body] [--json]
   annot audit <root...> [--limit <n>] [--json]
   annot context <flow.json> <node-id> [--json]
   annot render <flow.json> [--out <file>]
@@ -37,6 +39,7 @@ Options
   --sidecar <json>   human calibration file (annot.sidecar.json)
   --skill <path>     SKILL.md to compare a flow against (check)
   --limit <n>        how many rows audit prints (default: 20)
+  --body             search also matches body text (default: name/description/headings)
   --json             machine-readable output on stdout
   -h, --help
 `;
@@ -55,6 +58,8 @@ export async function main(argv: string[]): Promise<number> {
       return check(rest);
     case 'list':
       return list(rest);
+    case 'search':
+      return search(rest);
     case 'audit':
       return audit(rest);
     case 'context':
@@ -202,6 +207,50 @@ async function list(argv: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * `search <query...> [roots...]` splits on `--`: everything before it is the
+ * query, everything after is a root. Without `--`, roots are recognized by
+ * looking like a directory that exists, and the rest is the query — otherwise a
+ * bare `annot search audit` would be impossible to write.
+ */
+async function search(argv: string[]): Promise<number> {
+  // `--` is split off the raw argv, not out of `positionals`: node's parseArgs
+  // consumes the separator itself, so looking for it afterwards finds nothing
+  // and every word after it silently becomes part of the query.
+  const separator = argv.indexOf('--');
+  const head = separator >= 0 ? argv.slice(0, separator) : argv;
+  const tail = separator >= 0 ? argv.slice(separator + 1) : [];
+  const { values, positionals } = parse(head, ['body']);
+
+  const { existsSync } = await import('node:fs');
+  const looksLikeRoot = (p: string) => p.includes('/') || p.includes('\\') || existsSync(p);
+  const queryParts = separator >= 0 ? positionals : positionals.filter((p) => !looksLikeRoot(p));
+  const rootParts = separator >= 0 ? tail : positionals.filter(looksLikeRoot);
+
+  const query = queryParts.join(' ').trim();
+  if (query === '') {
+    process.stderr.write('search needs a query, e.g. `annot search audit -- ~/.agents/skills`\n');
+    return 1;
+  }
+  if (rootParts.length === 0) {
+    process.stderr.write('search needs at least one root directory\n');
+    return 1;
+  }
+
+  const roots: RootSpec[] = rootParts.map((p, i) => ({ path: p, rank: DEFAULT_RANKS.custom + i, label: p }));
+  const result = await searchSkills(roots, query, { body: Boolean(values.body) });
+
+  if (values.json) {
+    // `--json` must be honoured even at zero matches: a caller that asked for
+    // machine output cannot be handed a human sentence instead.
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } else {
+    process.stdout.write(formatSearch(result));
+    for (const s of result.skipped) process.stderr.write(`skipped ${s.root}: ${s.reason}\n`);
+  }
+  return 0;
+}
+
 async function audit(argv: string[]): Promise<number> {
   const { values, positionals } = parse(argv, []);
   if (positionals.length === 0) {
@@ -258,6 +307,16 @@ async function verify(argv: string[]): Promise<number> {
     return 1;
   }
 
+  // A declared-string option given without a value arrives as `true`. Resolving
+  // that produces a TypeError several frames deep instead of telling the user
+  // what they typed wrong. Checked before any I/O: a usage error should not
+  // depend on whether the file happens to exist.
+  const rawShot = values.shot;
+  if (rawShot !== undefined && (typeof rawShot !== 'string' || rawShot === '')) {
+    process.stderr.write('--shot needs a directory, e.g. `--shot shots`\n');
+    return 1;
+  }
+
   const resolved = resolve(target);
   const htmlPath = resolved.endsWith('.html') ? resolved : resolved.replace(/\.flow\.json$/, '.html');
   const flowPath = resolved.endsWith('.json') ? resolved : resolved.replace(/\.html$/, '.flow.json');
@@ -270,7 +329,7 @@ async function verify(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const shotDir = values.shot as string | undefined;
+  const shotDir = rawShot;
   const report = await renderCheck(htmlPath, doc, { shotDir: shotDir ? resolve(shotDir) : undefined });
 
   if (values.json) {

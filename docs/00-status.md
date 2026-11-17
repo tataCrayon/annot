@@ -10,9 +10,10 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 72 个测试，全绿
+node --test test/*.test.ts test/*.test.js   # 105 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
+node src/cli.ts search <词> -- <root...>
 node src/cli.ts check <flow.json>
 node src/cli.ts verify <flow.json> --shot <dir>
 ```
@@ -46,15 +47,15 @@ node src/cli.ts verify <flow.json> --shot <dir>
 
 ```
 src/         引擎（零依赖，零构建，Node 24 直接跑 .ts）
-  parse → flow → drift → audit → context → render → visual → browser
+  parse → flow → drift → audit → context → search → render → visual → browser
   fsx        原子写入（临时文件 + fsync + 空文件拒绝 + rename）
   manifest   annotation.json：相对路径 + 源 sha + 产物 sha256
 plugin/      DSH 宿主壳（JS，无构建）
-  index.js   四个只读路由，每个 exec 一次 CLI
+  index.js   五个只读路由，每个 exec 一次 CLI
   client.js  侧边栏行 + 主区页面，经 __ModuleLoader__ 注册
-test/        72 个测试，含 12 个插件测试与 3 个 vm 跑的客户端测试
+test/        105 个测试，含 26 个插件测试、7 个搜索测试、10 个 CLI 测试、8 个产物链路测试
 sandbox/     隔离验收脚本，不碰真实 ~/.agents
-tools/       人眼工具：inspect（表）/ explain（反查）
+tools/       人眼工具：inspect（表）/ explain（反查）/ probe-panel（打 GUI）
 docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照
 ```
 

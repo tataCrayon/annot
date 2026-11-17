@@ -200,7 +200,8 @@ async function capture(browser: Browser, dir: string, width: number, height: num
   await atomicWriteBytes(join(dir, `${width}x${height}.png`), png, 'base64');
 }
 
-export function formatRenderReport(report: RenderReport): string {  const lines: string[] = [];
+export function formatRenderReport(report: RenderReport): string {
+  const lines: string[] = [];
   const name = report.artifact.split(/[\\/]/).pop() ?? report.artifact;
 
   if (report.status === 'skipped') {

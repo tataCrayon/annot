@@ -31,7 +31,7 @@ test('every declared export points at a file that exists', () => {
 test('the modules a reader would import are all exported', () => {
   // Named explicitly: a missing key here is the bug, so the list may not be
   // derived from `exports` itself.
-  const required = ['./parse', './flow', './drift', './audit', './context', './manifest', './render', './visual', './browser'];
+  const required = ['./parse', './flow', './drift', './audit', './search', './context', './manifest', './render', './visual', './browser'];
   for (const subpath of required) {
     assert.ok(pkg.exports[subpath], `exports is missing ${subpath}`);
   }

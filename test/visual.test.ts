@@ -13,7 +13,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -125,6 +125,41 @@ test('a page that phones home fails the offline contract', { skip: browserless &
 
     assert.equal(report.status, 'fail');
     assert.ok(report.network.some((u) => u.includes('leak.png')), `network: ${report.network.join(', ')}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('--shot writes one decodable PNG per viewport, named by its size', { skip: browserless && 'no browser' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'annot-visual-'));
+  const shots = join(dir, 'shots');
+  try {
+    const doc = await fixtureDoc();
+    const html = await writePage(dir, doc);
+    const report = await renderCheck(html, doc, { shotDir: shots });
+    assert.equal(report.status, 'pass', `render failed: ${report.problems.join(' | ')}`);
+
+    for (const [width, height] of VIEWPORTS) {
+      const path = join(shots, `${width}x${height}.png`);
+      const bytes = await readFile(path);
+      assert.ok(bytes.length > 0, `${width}x${height}.png is empty`);
+
+      // A PNG written through the utf8 path is base64 text that looks like a
+      // plausible file size and is not a PNG at all. The magic is the only
+      // honest proof, so it is asserted rather than the byte count.
+      assert.equal(
+        bytes.subarray(0, 8).toString('latin1'),
+        '\x89PNG\r\n\x1a\n',
+        `${width}x${height}.png does not start with the PNG signature`,
+      );
+      // IHDR carries the dimensions: bytes 16..24, big-endian, after the 8-byte
+      // signature and the 8-byte length+type header.
+      assert.equal(bytes.readUInt32BE(16), width, `${width}x${height}.png is ${bytes.readUInt32BE(16)}px wide`);
+      assert.equal(bytes.readUInt32BE(20), height, `${width}x${height}.png is ${bytes.readUInt32BE(20)}px tall`);
+    }
+
+    const written = (await readdir(shots)).sort();
+    assert.deepEqual(written, VIEWPORTS.map(([w, h]) => `${w}x${h}.png`).sort(), 'shot dir has exactly one file per viewport');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
