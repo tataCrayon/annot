@@ -138,6 +138,34 @@ function runCli(cli, args, options = {}) {
 }
 
 /**
+ * Describe whether the client-module registry composed this package.
+ *
+ * Three answers, and the distinction is the whole point:
+ *   `undefined`  the profile has no clientModules service
+ *   `{registered:false}`  it does, and this package is not in its table
+ *   `{registered:true}`   composed, with the URL the page would fetch
+ */
+function describeComposed(service, packageName) {
+  if (!service || typeof service.graph !== 'function') return undefined;
+  try {
+    const graph = service.graph();
+    const rows = Array.isArray(graph?.entries) ? graph.entries : [];
+    const row = rows.find((entry) => entry && entry.id === packageName);
+    if (!row) return { registered: false, total: rows.length };
+    return {
+      registered: true,
+      total: rows.length,
+      rev: row.rev,
+      url: row.url,
+      inject: row.inject ?? [],
+      immediately: row.immediately === true,
+    };
+  } catch (error) {
+    return { registered: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * Read a request body with a hard ceiling.
  *
  * The report route takes arbitrary JSON from the page, so an unbounded read is
@@ -237,6 +265,16 @@ function makeRoutes(config, logger) {
   const nodeArgs = config?.cliNodeArgs ?? [];
 
   /**
+   * A live handle on the Host's client-module registry, when the profile has one.
+   *
+   * This is ground truth for "was the browser half ever composed into the page",
+   * and it is answerable from inside the process with no auth, no browser, and no
+   * guessing at slot names: the registry holds a row per `dsh.client` package and
+   * knows the exact bundle path it would serve. `apply` fills it in later through
+   * an optional `ctx.inject`, so the route list stays buildable without one.
+   */
+  const selfcheckRegistry = { service: undefined };
+  /**
    * The set of SKILL.md paths a scan currently produces, cached briefly.
    *
    * The `?path=` guard needs it: without this check the route reads any
@@ -273,8 +311,7 @@ function makeRoutes(config, logger) {
     return scanInFlight;
   };
 
-  const guard = (req, res, method) => {
-    if (!isLoopbackRequest(req)) {
+  const guard = (req, res, method) => {    if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'loopback only' });
       return false;
     }
@@ -300,7 +337,13 @@ function makeRoutes(config, logger) {
     if (pageReports.length > 20) pageReports.splice(0, pageReports.length - 20);
   };
 
-  return [
+  /**
+   * The selfcheck route object itself, so `apply` can hang the optional
+   * client-module registry on it without making that a hard dependency.
+   */
+  let selfcheckRoute;
+
+  const routes = [
     {
       kind: 'exact',
       path: ROUTES.status,
@@ -336,6 +379,11 @@ function makeRoutes(config, logger) {
             exists: meta.exists,
             bytes: meta.bytes,
           },
+          // Whether the Host actually composed a graph row for this package, and
+          // what URL it published. `undefined` means the registry service is not
+          // in this profile; `{ registered: false }` means it is and we are not
+          // in it, which is the failure that leaves no other trace.
+          composed: describeComposed(selfcheckRoute && selfcheckRoute.composed, meta.name),
           // `reports` collects what the browser half saw, so a user who CAN see
           // the page turns their observation into data the Host can act on.
           reports: pageReports,
@@ -345,8 +393,7 @@ function makeRoutes(config, logger) {
     },
     {
       kind: 'exact',
-      path: ROUTES.report,
-      handler: async (req, res) => {
+      path: ROUTES.report,      handler: async (req, res) => {
         // POST, not GET, and it accepts only loopback: this is the page telling
         // the Host what it did, and a cross-site POST would let any tab forge
         // that observation.
@@ -472,6 +519,9 @@ function makeRoutes(config, logger) {
       },
     },
   ];
+
+  selfcheckRoute = routes.find((route) => route.path === ROUTES.selfcheck);
+  return routes;
 }
 
 /**
@@ -486,10 +536,26 @@ function tempOutFor(skill) {
 
 export function apply(ctx, config) {
   const routes = makeRoutes(config, { warn: (error) => ctx.logger.warn(error) });
+  const selfcheck = routes.find((route) => route.path === ROUTES.selfcheck);
   ctx.effect(() => {
     const disposers = routes.map((route) => ctx.webServer.register(route));
     return () => {
       for (const dispose of disposers) dispose();
     };
   }, 'annot: routes');
+
+  // Optional, and deliberately not in `inject`: the panel is useful without the
+  // module registry, and requiring it would keep the whole plugin inactive in
+  // profiles that do not serve a Web page. When it is present, the selfcheck
+  // route can say whether this package was ever composed into the page.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['clientModules'], (scoped) => {
+      scoped.effect(() => {
+        if (selfcheck) selfcheck.composed = scoped.clientModules;
+        return () => {
+          if (selfcheck) selfcheck.composed = undefined;
+        };
+      }, 'annot: client-modules presence');
+    });
+  }
 }
