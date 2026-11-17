@@ -10,7 +10,7 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 105 个测试，全绿
+node --test test/*.test.ts test/*.test.js   # 108 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>
@@ -36,7 +36,7 @@ node src/cli.ts verify <flow.json> --shot <dir>
 
 | # | 洞 | 影响 | 下一步 |
 |---|---|---|---|
-| 1 | **DSH 面板没有在浏览器里目视确认过** | 路由全部 200、插件 `applied`、`client.js` 过了 vm 测试；但"点侧边栏能不能看到图"没人看过。用 `tools/probe-panel.ts` 从无头浏览器打这个 GUI，页面返回 `dsh web authentication required`（401），所以**自动化看不到面板**——只能由持有登录态的人看一眼 | 刷新 GUI → 侧边栏 Annot → 选 challenge。若空白，先看 console 有没有 `slot entry crashed` |
+| 1 | **DSH 面板没有在浏览器里目视确认过** | 路由全部 200、插件 `applied`、`client.js` 过了 vm 测试；但"点侧边栏能不能看到图"没人看过 | **先看 `GET /api/annot/selfcheck`**：`reports` 为空 = bundle 没到页面；有 `apply-enter` 无 `seat-available` = 宿主没声明席位；有 `registered` = 注册成功，问题在往哪看 |
 | 2 | 未绑定分支 3 个（grill-method 的 `守住/改良/替换`） | 图的右半边是断的；`audit` 已在计入 | `segment()` 里 `slashArms(m[2])` 没接；需要把表格首列的取值也当分支 |
 | 3 | audit 权重没有校准数据 | `×10/×5/×2/×1/×20` 是拍的 | 只当排序用，别再对外讲"评分" |
 | 4 | `flow.json` 没有 JSON Schema | 第三方不能独立校验 | 从 `src/types.ts` 生成一份 |

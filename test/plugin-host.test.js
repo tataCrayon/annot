@@ -41,11 +41,20 @@ function mount(config = {}) {
 }
 
 function fakeReq(url, options = {}) {
+  // The report route reads the request body as a stream, so the fake carries
+  // `on('data'|'end')` rather than a string property.
+  const body = options.body ?? '';
   return {
     url,
     method: options.method ?? 'GET',
     headers: { host: '127.0.0.1:51251', 'sec-fetch-site': 'same-origin', ...(options.headers ?? {}) },
     socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
+    on(event, listener) {
+      if (event === 'data' && body !== '') listener(Buffer.from(body, 'utf8'));
+      if (event === 'end') listener();
+      return this;
+    },
+    destroy() {},
   };
 }
 
@@ -70,11 +79,60 @@ async function call(route, req) {
   return res;
 }
 
-test('applying registers the five documented routes under one effect', () => {
+test('applying registers every documented route under one effect', () => {
   const { routes, effectName } = mount();
   assert.deepEqual(routes.map((r) => r.path).sort(), Object.values(ROUTES).sort());
-  assert.equal(routes.length, 5);
+  assert.equal(routes.length, 7, 'status, selfcheck, report, list, search, flow, audit');
   assert.match(effectName, /annot/i, 'the effect must be named so a failing mount is traceable');
+});
+
+test('the selfcheck route reports the client declaration and what the page said', async () => {
+  const { routes } = mount();
+  const route = routes.find((r) => r.path === ROUTES.selfcheck);
+  const res = await call(route, fakeReq(route.path));
+  assert.equal(res.status, 200);
+  // The bundle exists and is non-empty, or the panel cannot possibly appear.
+  assert.equal(res.body.package, 'annot-dsh');
+  assert.equal(res.body.client.platform, 'web');
+  assert.equal(res.body.client.exists, true, `client entry missing: ${res.body.client.entry}`);
+  assert.ok(res.body.client.bytes > 0);
+  assert.deepEqual(res.body.reports, []);
+});
+
+test('the report route accepts a loopback POST and files it', async () => {
+  const { routes } = mount();
+  const report = routes.find((r) => r.path === ROUTES.report);
+  const check = routes.find((r) => r.path === ROUTES.selfcheck);
+
+  const posted = await call(report, fakeReq(ROUTES.report, { method: 'POST', body: '{"event":"apply-enter"}' }));
+  assert.equal(posted.status, 200);
+
+  const res = await call(check, fakeReq(ROUTES.selfcheck));
+  assert.equal(res.body.reports.length, 1);
+  assert.equal(res.body.reports[0].event, 'apply-enter');
+  assert.equal(typeof res.body.reports[0].receivedAt, 'string');
+});
+
+test('the report route refuses a wrong method, a foreign caller, and a non-JSON body', async () => {
+  const { routes } = mount();
+  const report = routes.find((r) => r.path === ROUTES.report);
+
+  // Loopback first, then method: the order the other routes use, so a wrong
+  // method never becomes a way to learn whether a caller is trusted.
+  const get = await call(report, fakeReq(ROUTES.report, { method: 'GET' }));
+  assert.equal(get.status, 405);
+
+  const lan = await call(report, fakeReq(ROUTES.report, { method: 'POST', remoteAddress: '10.0.0.7' }));
+  assert.equal(lan.status, 403, 'a LAN caller must not be able to forge an observation');
+
+  const crossSite = await call(report, fakeReq(ROUTES.report, { method: 'POST', headers: { 'sec-fetch-site': 'cross-site' } }));
+  assert.equal(crossSite.status, 403, 'another site must not be able to forge an observation');
+
+  const bad = await call(report, fakeReq(ROUTES.report, { method: 'POST', body: 'not json' }));
+  assert.equal(bad.status, 400);
+
+  const empty = await call(report, fakeReq(ROUTES.report, { method: 'POST', body: '' }));
+  assert.equal(empty.status, 400);
 });
 
 test('every route refuses a non-loopback caller', async () => {

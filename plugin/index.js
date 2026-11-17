@@ -22,14 +22,18 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const name = 'annot';
 export const inject = ['webServer'];
 
 export const ROUTES = {
   status: '/api/annot/status',
+  selfcheck: '/api/annot/selfcheck',
+  report: '/api/annot/selfcheck/report',
   list: '/api/annot/list',
   search: '/api/annot/search',
   flow: '/api/annot/flow',
@@ -133,8 +137,31 @@ function runCli(cli, args, options = {}) {
   });
 }
 
-function tryParse(text) {
-  if (text === '') return undefined;
+/**
+ * Read a request body with a hard ceiling.
+ *
+ * The report route takes arbitrary JSON from the page, so an unbounded read is
+ * a memory hole in the Host process. 64 KiB is far more than a diagnostic needs.
+ */
+function readBody(req, limit = 64 * 1024) {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        req.destroy();
+        resolve('');
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => resolve(''));
+  });
+}
+
+function tryParse(text) {  if (text === '') return undefined;
   try {
     return JSON.parse(text);
   } catch {
@@ -159,6 +186,50 @@ function rootsFor(config) {
   return [`.dsh/skills`, '.agents/skills']
     .flatMap((rel) => [home ? `${home}/${rel}` : undefined, cwd ? `${cwd}/${rel}` : undefined])
     .filter((p) => typeof p === 'string' && p !== '');
+}
+
+/**
+ * What this package declares about its browser half, read from disk.
+ *
+ * The module composer resolves a client bundle from `exports["./client"]` in the
+ * manifest of the package the Loader mounted, and emits a graph row only when
+ * `dsh.client.platform === "web"`. Both are cheap to check and both are silent
+ * when wrong: a missing `./client` export throws at activation, but a bundle
+ * that exists and never loads leaves no trace at all. Reporting the declaration
+ * next to the file's existence separates those two failures.
+ */
+function readClientMeta() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  try {
+    const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf8'));
+    const decl = pkg?.dsh?.client ?? {};
+    const exported = typeof pkg?.exports === 'object' && pkg.exports !== null ? pkg.exports['./client'] : undefined;
+    const relative = typeof exported === 'string' ? exported : exported?.default;
+    const entry = typeof relative === 'string' ? join(here, relative) : undefined;
+    let bytes = 0;
+    if (entry !== undefined) {
+      try {
+        bytes = statSync(entry).size;
+      } catch {
+        bytes = 0;
+      }
+    }
+    return {
+      name: typeof pkg?.name === 'string' ? pkg.name : '(unnamed)',
+      platform: typeof decl.platform === 'string' ? decl.platform : '(not declared)',
+      entry: entry ?? '(no exports["./client"])',
+      exists: bytes > 0,
+      bytes,
+    };
+  } catch (error) {
+    return {
+      name: '(manifest unreadable)',
+      platform: '(manifest unreadable)',
+      entry: error instanceof Error ? error.message : String(error),
+      exists: false,
+      bytes: 0,
+    };
+  }
 }
 
 function makeRoutes(config, logger) {
@@ -216,6 +287,19 @@ function makeRoutes(config, logger) {
 
   const roots = () => rootsFor(config);
 
+  /**
+   * What the browser half has told us about itself, newest last.
+   *
+   * This is the only evidence that distinguishes "the bundle never arrived" from
+   * "the bundle ran and the row is not where the user looked". Both look the
+   * same from the Host, and neither is answerable without the page.
+   */
+  const pageReports = [];
+  const recordReport = (entry) => {
+    pageReports.push({ ...entry, receivedAt: new Date().toISOString() });
+    if (pageReports.length > 20) pageReports.splice(0, pageReports.length - 20);
+  };
+
   return [
     {
       kind: 'exact',
@@ -226,6 +310,68 @@ function makeRoutes(config, logger) {
         // A CLI that exists but exits non-zero on `version` still counts as
         // present unless the failure says the entry point is missing.
         writeJson(res, 200, { installed: !result.missing, cli, roots: roots() });
+      },
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.selfcheck,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return;
+        // Whether the browser half actually reached the page is a fact only the
+        // page can report, and the person who can see the page is the user. This
+        // route is where that becomes checkable instead of guessed at.
+        //
+        // It answers three things the Host knows on its own:
+        //   - the declared client entry point, and whether that file exists;
+        //   - whether `dsh.client.platform` is `web` (otherwise the composer
+        //     never emits a graph row for this package at all);
+        //   - the URL shape the module system serves bundles under, so a stale
+        //     hand-written probe can be corrected rather than believed.
+        const meta = readClientMeta();
+        writeJson(res, 200, {
+          package: meta.name,
+          client: {
+            platform: meta.platform,
+            entry: meta.entry,
+            exists: meta.exists,
+            bytes: meta.bytes,
+          },
+          // `reports` collects what the browser half saw, so a user who CAN see
+          // the page turns their observation into data the Host can act on.
+          reports: pageReports,
+          bundleRoute: '/plugins',
+        });
+      },
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.report,
+      handler: async (req, res) => {
+        // POST, not GET, and it accepts only loopback: this is the page telling
+        // the Host what it did, and a cross-site POST would let any tab forge
+        // that observation.
+        if (!isLoopbackRequest(req)) {
+          writeJson(res, 403, { error: 'loopback only' });
+          return;
+        }
+        if (req.method !== 'POST') {
+          writeJson(res, 405, { error: 'expected POST' });
+          return;
+        }
+        const body = await readBody(req);
+        if (body === '') {
+          writeJson(res, 400, { error: 'expected a JSON body' });
+          return;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          writeJson(res, 400, { error: 'body is not JSON' });
+          return;
+        }
+        recordReport(typeof parsed === 'object' && parsed !== null ? parsed : { value: parsed });
+        writeJson(res, 200, { ok: true });
       },
     },
     {

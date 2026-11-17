@@ -2,7 +2,7 @@
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，105 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，108 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -238,14 +238,16 @@ dsh plugin --profile <profile> add <repo>/plugin
 | 路由 | 作用 |
 |---|---|
 | `GET api/annot/status` | CLI 是否可用、扫描哪些根 |
-| `GET api/annot/list` | 按宿主同样的 rank 规则列 skill |
+| `GET api/annot/selfcheck` | 浏览器半边声明与自述（面板不出现时先看这个） |
+| `POST api/annot/selfcheck/report` | 页面自述：`apply-enter` / `seat-available` / `registered` / `register-failed` |
+| `GET api/annot/list[?fresh=1]` | 按宿主同样的 rank 规则列 skill |
 | `GET api/annot/search?q=<text>[&body=1]` | 搜 skill；默认不搜正文 |
 | `GET api/annot/flow?path=<SKILL.md>` | 一张图（含服务端算好的布局） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（总分是完整的，只有表格被截断） |
 
-五条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 这一写操作**不在路由里**。
+七条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 这一写操作**不在路由里**。
 
-`plugin/` 有 26 个测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"。
+`plugin/` 有 29 个测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"、"报告路由不接受跨站伪造"。
 
 ---
 
@@ -264,7 +266,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 105 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 108 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

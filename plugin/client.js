@@ -11,6 +11,8 @@ window.__ModuleLoader__.load({
      */
     const API = {
       status: 'api/annot/status',
+      selfcheck: 'api/annot/selfcheck',
+      report: 'api/annot/selfcheck/report',
       list: 'api/annot/list',
       search: 'api/annot/search',
       flow: 'api/annot/flow',
@@ -821,22 +823,49 @@ window.__ModuleLoader__.load({
 
     const PANEL_ID = 'annot';
 
+    /**
+     * Tell the Host this bundle ran.
+     *
+     * Only the page can answer "did the browser half arrive", and only a person
+     * who can see the page can answer "is the row there". Without this beacon
+     * both questions are answered by guessing at slot names in a comment.
+     *
+     * Fire-and-forget on purpose: a failed beacon must never break the panel.
+     */
+    function report(observation) {
+      try {
+        fetch(API.report, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...observation, at: new Date().toISOString() }),
+        }).catch(() => undefined);
+      } catch {
+        // A page with no fetch is a page that will not show the panel either.
+      }
+    }
+
     function apply(ctx) {
+      report({ event: 'apply-enter', hasSlots: Boolean(ctx && ctx.slots) });
       // Registration failing must leave a trace. Without this the panel simply
       // never appears, which is indistinguishable from "the bundle is not
       // installed" and is the single most expensive state to debug.
       const disposers = [];
       try {
         const slots = ctx.slots;
+        if (!slots) throw new Error('the client context has no `slots` service');
         ctx.effect(
           () => () => {
             for (const dispose of disposers.splice(0)) dispose();
           },
           'annot: ui',
         );
+        // `inject`'s callback fires only once the seat exists. Reporting the
+        // moment it fires is what tells "no such seat" apart from "seat exists,
+        // row not visible where the user looked".
         disposers.push(
-          slots.inject('sidebar.panellist', () =>
-            slots.register(
+          slots.inject('sidebar.panellist', () => {
+            report({ event: 'seat-available', seat: 'sidebar.panellist' });
+            return slots.register(
               {
                 name: 'sidebar.panellist',
                 id: PANEL_ID,
@@ -846,21 +875,25 @@ window.__ModuleLoader__.load({
                 label: () => 'Annot',
               },
               PanelRowIcon,
-            ),
-          ),
+            );
+          }),
         );
         disposers.push(
-          slots.inject('main', () =>
-            slots.register(
+          slots.inject('main', () => {
+            report({ event: 'seat-available', seat: 'main' });
+            return slots.register(
               {
                 name: 'main',
                 key: PANEL_ID,
               },
               AnnotPage,
-            ),
-          ),
+            );
+          }),
         );
+        report({ event: 'registered' });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        report({ event: 'register-failed', message });
         console.warn('[annot] panel registration failed; the Annot row will not appear', error);
       }
     }

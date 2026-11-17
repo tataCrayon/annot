@@ -36,15 +36,27 @@
 
 ## 路由
 
-五个只读路由，全部限制在 loopback：
+七个只读路由（`report` 是写，只收页面自己的自述），全部限制在 loopback：
 
 | 路由 | 作用 |
 |---|---|
 | `GET api/annot/status` | CLI 是否可用，扫描哪些根目录 |
+| `GET api/annot/selfcheck` | 浏览器半边声明了什么、入口文件在不在、页面报告过什么 |
+| `POST api/annot/selfcheck/report` | 页面自述（`apply-enter` / `seat-available` / `registered` / `register-failed`） |
 | `GET api/annot/list[?fresh=1]` | 按宿主同样的 rank 规则列 skill；`fresh=1` 丢弃扫描缓存 |
 | `GET api/annot/search?q=<text>[&body=1]` | 搜 skill。默认只搜 **name / 描述 / 标题**；`body=1` 才搜正文 |
 | `GET api/annot/flow?path=<SKILL.md>` | 抽取一张图（含服务端算好的布局） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（`total`/`clean` 是全库的，只有表格被截断） |
+
+`selfcheck` 回答的是"面板为什么不出现"这个最难查的问题。三种状态分得开：
+
+- `reports` 为空 → **浏览器半边根本没加载**（bundle 没到页面）。查 `dsh.client` 声明与 `exports["./client"]`。
+- 有 `apply-enter` 没有 `seat-available` → 加载了，但宿主没声明 `sidebar.panellist` 这个席位。
+- 有 `seat-available` 和 `registered` → 注册成功了，那问题在"用户往哪看"，不在插件。
+
+```bash
+curl -s http://127.0.0.1:<port>/api/annot/selfcheck
+```
 
 `annotate` 这一写操作**不在路由里**：一个能重写 skill 产物的 web 路由权限远大于一个只读面板。要生成产物请用命令行。
 
