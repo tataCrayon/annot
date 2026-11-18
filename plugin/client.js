@@ -665,6 +665,14 @@ window.__ModuleLoader__.load({
       const current = state.current;
       const doc = current && current.doc ? current.doc : null;
 
+      // Report once per mount. `reports` gaining a `panel-mounted` row is the
+      // difference between "registered into a seat" and "a human actually
+      // reached the page", and the Host cannot see the latter any other way.
+      React.useEffect(() => {
+        mountCount += 1;
+        report({ event: 'panel-mounted', count: mountCount });
+      }, []);
+
       if (state.status.loading) {
         return h(
           'div',
@@ -820,6 +828,9 @@ window.__ModuleLoader__.load({
         h('rect', { x: 1, y: 9, width: 14, height: 4, rx: 1, fill: 'currentColor', opacity: 0.75 }),
       );
     }
+
+    /** Where the panel was mounted, so the page can tell the Host without a probe. */
+    let mountCount = 0;
 
     const PANEL_ID = 'annot';
 
