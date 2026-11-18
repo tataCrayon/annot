@@ -2,7 +2,7 @@
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，132 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，154 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -148,7 +148,7 @@ annot verify .annot/my-skill/my-skill.flow.json
 
 退出码就是结论：`0` 通过，`1` 有问题，`2` **跳过**（本机没有浏览器——跳过绝不会被报成通过）。
 
-它在真实的 Chrome/Chromium/Edge 里跑三个视口（1440×900 / 1600×1000 / 1920×1080），检查：
+它在真实的 Chrome/Chromium/Edge 里跑四个视口（1440×900 / 1600×1000 / 1920×1080 / 2048×1320），检查：
 
 | 检查 | 为什么是它 |
 |---|---|
@@ -161,15 +161,16 @@ annot verify .annot/my-skill/my-skill.flow.json
 | 没有未捕获异常 / console error | 编译通过不代表运行不炸 |
 
 ```
-✓ grill-method.html: 3 个视口
-   1440×900   no-hscroll  graph 1278>1056 (pans)  26 nodes
-   1600×1000  no-hscroll  graph 1278>1216 (pans)  26 nodes
+✓ grill-method.html: 4 个视口
+   1440×900   no-hscroll  graph fits  26 nodes
+   1600×1000  no-hscroll  graph fits  26 nodes
    1920×1080  no-hscroll  graph fits  26 nodes
+   2048×1320  no-hscroll  graph fits  26 nodes
 ```
 
-`graph … (pans)` 是**信息不是错误**：26 个节点的图在 1440 宽里本来就要平移查看（画布本身是 `overflow:auto` 的）。真正会判失败的是文档级横向滚动、节点数不符、溢出、网络请求。
+`graph … (pans)` 是**信息不是错误**：图比图区宽时本来就要平移查看（画布本身是 `overflow:auto` 的）。真正会判失败的是文档级横向滚动、节点数不符、溢出、网络请求。
 
-抓一张截图：`annot verify … --shot ./shots`，会按视口写出 `1440x900.png` 等三张。
+抓一张截图：`annot verify … --shot ./shots`，会按视口写出 `1440x900.png` 等四张。
 
 零依赖：直接用 Node 内置的 `WebSocket` 讲 CDP，不装 Puppeteer。浏览器路径自动探测，也可以用 `ANNOT_CHROME` 指定。
 
@@ -269,7 +270,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 132 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 154 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果
