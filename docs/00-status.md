@@ -1,4 +1,4 @@
-# 状态：M1 完成、M2 可用（面板已确认真实渲染）
+# 状态：M1 完成、M2 面板已注册成功并可查
 
 > 写于 2026-11-18。给下一个接手的人（或下一个会话）看的第一份文件。
 > 这里只写"现在是什么"，不写"为什么"。为什么在 `docs/02`。
@@ -33,6 +33,7 @@ node src/cli.ts verify <flow.json> --shot <dir>
 | grill-method | 26 节点 / 25 边 / 3 个未绑定分支 | `annot annotate` 的 `forks` 行 |
 | challenge | 13 节点 / 12 边 / 0 分支 | 同上 |
 | 面板链路 | `composed.registered: true`，rev `9b0a9bca464d` | `GET /api/annot/selfcheck` |
+| 面板是否被打开过 | 这一轮**还没有** `panel-mounted` | 同上，`reports` |
 
 ## 面板的可观测性（这是这一轮真正补上的东西）
 
@@ -45,6 +46,8 @@ node src/cli.ts verify <flow.json> --shot <dir>
 | 有 `apply-enter`、无 `seat-available` | 执行了，但宿主没声明 `sidebar.panellist` 这个席位 |
 | 有 `registered` | 注册成功 |
 | 有 `panel-mounted` | **有人真的打开过这个面板**，链路全通 |
+
+除最后一行，其余三行都已被实测填过：`registered: true`、`apply-enter` 与 `seat-available` 曾连续出现三次（每次页面重载一次）。缺的只有 `panel-mounted`——它需要有人真的点开那一行。
 
 `composed` 直读宿主的 `clientModules` 服务，并给出确切的 bundle URL（形如 `plugins/??annot-dsh/client.js&rev=<hash>`，rev 由 client.js 的 mtime/ctime/size 算出）。
 
