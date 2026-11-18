@@ -82,7 +82,7 @@ async function call(route, req) {
 test('applying registers every documented route under one effect', () => {
   const { routes, effectName } = mount();
   assert.deepEqual(routes.map((r) => r.path).sort(), Object.values(ROUTES).sort());
-  assert.equal(routes.length, 7, 'status, selfcheck, report, list, search, flow, audit');
+  assert.equal(routes.length, 8, 'status, selfcheck, report, list, search, flow, context, audit');
   assert.match(effectName, /annot/i, 'the effect must be named so a failing mount is traceable');
 });
 
@@ -211,4 +211,22 @@ test('a missing CLI is a 503 with a reason, never a silent empty list', async ()
   const res = await call(route, fakeReq(route.path));
   assert.equal(res.status, 503);
   assert.match(res.body.error, /cannot run|not found|ENOENT/i);
+});
+
+test('context requires both a skill and a node, and refuses a skill no scan produced', async () => {
+  const { routes } = mount();
+  const route = routes.find((r) => r.path === ROUTES.context);
+
+  const noSkill = await call(route, fakeReq(route.path));
+  assert.equal(noSkill.status, 400);
+
+  const noNode = await call(route, fakeReq(`${route.path}?path=${encodeURIComponent('/nowhere/SKILL.md')}`));
+  assert.equal(noNode.status, 400, 'a node id is required; there is nothing to slice without one');
+  assert.match(noNode.body.error, /node/);
+
+  // The path guard runs before any CLI call, so a path outside the scan cannot
+  // be used to make the panel read arbitrary markdown.
+  const unknown = await call(route, fakeReq(`${route.path}?path=${encodeURIComponent('/nowhere/SKILL.md')}&node=n-a`));
+  assert.equal(unknown.status, 422);
+  assert.equal(unknown.body.retryable, true);
 });

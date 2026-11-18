@@ -31,36 +31,42 @@
 - **流程图**：方块按类型着色（阶段 / 判定 / 门禁 / 产物 / 外部调用），顶部有图例；实线是文中顺序，橙色虚线是作者写明的分支（`→`、`✅/❌`、`守住 / 改良 / 替换`）。方块右上角的黄色角标 = 未绑定分支数；橙色圆点 = 这个节点本身置信度低于 60%。方块可用 Tab 聚焦、回车打开。
 - **审计**：分数越高说明抽取结果越差；`低置信` 是低于 60% 的节点数，`未绑定` 是分支没落到具体方块，`空标签` 是标签为空。点一行直接打开那个 skill。
 - **右侧详情**：类型、置信度、锚点、行哈希、小节、分支、原文。
+- **自然语言改**：选中一个节点后点「生成改写上下文」，拿到这段的**精确行范围 + 原文 + 约束**，一键复制给你的 agent。面板自己不改文件、不调模型——改由你自己的 agent 做，`annot check` 判定改对没改对。
+
+> 为什么面板不直接改：它没有模型，也不该有。真正稀缺的是"到底改哪几行、改的时候不能动什么"，这部分由 CLI 精确给出；剩下那步本来就是你 agent 的强项。
 
 ---
 
 ## 路由
 
-七个只读路由（`report` 是写，只收页面自己的自述），全部限制在 loopback：
+八条路由（`report` 是写，只收页面自己的自述），全部限制在 loopback：
 
 | 路由 | 作用 |
 |---|---|
 | `GET api/annot/status` | CLI 是否可用，扫描哪些根目录 |
 | `GET api/annot/selfcheck` | 浏览器半边声明了什么、入口文件在不在、页面报告过什么 |
-| `POST api/annot/selfcheck/report` | 页面自述（`apply-enter` / `seat-available` / `registered` / `register-failed`） |
+| `POST api/annot/selfcheck/report` | 页面自述（`apply-enter` / `seat-available` / `registered` / `register-failed` / `panel-mounted`） |
 | `GET api/annot/list[?fresh=1]` | 按宿主同样的 rank 规则列 skill；`fresh=1` 丢弃扫描缓存 |
 | `GET api/annot/search?q=<text>[&body=1]` | 搜 skill。默认只搜 **name / 描述 / 标题**；`body=1` 才搜正文 |
 | `GET api/annot/flow?path=<SKILL.md>` | 抽取一张图（含服务端算好的布局） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（`total`/`clean` 是全库的，只有表格被截断） |
 
-`selfcheck` 回答的是"面板为什么不出现"这个最难查的问题。三种状态分得开：
+`selfcheck` 回答的是"面板为什么不出现"这个最难查的问题。四种状态分得开：
 
 - `reports` 为空 → **浏览器半边根本没加载**（bundle 没到页面）。查 `dsh.client` 声明与 `exports["./client"]`。
 - 有 `apply-enter` 没有 `seat-available` → 加载了，但宿主没声明 `sidebar.panellist` 这个席位。
-- 有 `seat-available` 和 `registered` → 注册成功了，那问题在"用户往哪看"，不在插件。
+- 有 `seat-available` 和 `registered` → 注册成功了，问题在"用户往哪看"。
+- 有 `panel-mounted` → **有人真的打开过这个面板**，链路全通。
+
+`composed` 字段来自宿主的 `clientModules` 服务：`registered: true` 表示这个包已经编进 `__DSH_BOOT__` 的模块图，并给出它确切的 bundle URL 与 rev。`registered: false` 且 `client.platform === 'web'` 才是真正的"编不进去"。
 
 ```bash
 curl -s http://127.0.0.1:<port>/api/annot/selfcheck
 ```
 
-`annotate` 这一写操作**不在路由里**：一个能重写 skill 产物的 web 路由权限远大于一个只读面板。要生成产物请用命令行。
+`annotate` 写进用户 skill 树的那条路**不在路由里**：一个能重写 skill 产物的 web 路由权限远大于一个只读面板。唯一的写是写到面板自己的临时目录（`/tmp/annot-panel/…`），因为出图必须先有 flow.json。
 
-`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`；任意路径会退化成文件读取原语。
+`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`；任意路径会退化成文件读取原语。`context` 路由同样先过这道检查。
 
 ---
 

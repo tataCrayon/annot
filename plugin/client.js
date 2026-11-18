@@ -16,6 +16,7 @@ window.__ModuleLoader__.load({
       list: 'api/annot/list',
       search: 'api/annot/search',
       flow: 'api/annot/flow',
+      context: 'api/annot/context',
       audit: 'api/annot/audit',
     };
 
@@ -284,12 +285,15 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = React.useState('');
       const [search, setSearch] = React.useState(null);
       const [searching, setSearching] = React.useState(false);
+      /** The edit context for the selected node, fetched on demand. */
+      const [edit, setEdit] = React.useState(null);
+      const [editPending, setEditPending] = React.useState(false);
 
       // Every request that can be superseded carries a ticket. A response whose
       // ticket is no longer the latest is dropped, which is the only way a slow
       // first answer cannot overwrite a fast second one — the classic
       // "I cleared the box and the old results came back" bug.
-      const tickets = React.useRef({ list: 0, search: 0, flow: 0, audit: 0 });
+      const tickets = React.useRef({ list: 0, search: 0, flow: 0, audit: 0, edit: 0 });
       const stamp = (key) => {
         tickets.current[key] += 1;
         return tickets.current[key];
@@ -391,6 +395,38 @@ window.__ModuleLoader__.load({
         if (current && current.skill) await openSkill(current.skill, { keepSelection: true });
       }, [current, loadList, openSkill]);
 
+      /**
+       * Ask the CLI for the exact lines behind the selected node.
+       *
+       * This is the whole "edit by natural language" handoff: the panel does not
+       * hold a model and must not pretend to. It hands the user a bounded slice
+       * plus the constraints, so their own agent can rewrite exactly those lines
+       * and `annot check` can prove nothing else moved.
+       */
+      const loadEdit = React.useCallback(async () => {
+        if (!current || !current.skill || !selected) return;
+        const ticket = stamp('edit');
+        setEditPending(true);
+        setEdit(null);
+        try {
+          const payload = await request(`${API.context}?path=${encodeURIComponent(current.skill.file)}&node=${encodeURIComponent(selected)}`);
+          if (stale('edit', ticket)) return;
+          setEdit(payload);
+        } catch (failure) {
+          if (stale('edit', ticket)) return;
+          setEdit({ error: failure.message });
+        } finally {
+          if (!stale('edit', ticket)) setEditPending(false);
+        }
+      }, [current, selected]);
+
+      React.useEffect(() => {
+        // Changing node invalidates the slice; leaving the previous node's lines
+        // on screen while a new request is in flight is how a user copies the
+        // wrong text into their editor.
+        setEdit(null);
+      }, [selected]);
+
       React.useEffect(() => {
         request(API.status)
           .then((payload) => setStatus({ loading: false, installed: Boolean(payload.installed), roots: payload.roots || [] }))
@@ -418,6 +454,9 @@ window.__ModuleLoader__.load({
         search,
         searching,
         runSearch,
+        edit,
+        editPending,
+        loadEdit,
       };
     }
 
@@ -474,6 +513,67 @@ window.__ModuleLoader__.load({
             ),
         h('h2', null, '原文'),
         h('pre', { className: 'annot-raw' }, node.raw),
+      );
+    }
+
+    /**
+     * The natural-language edit handoff.
+     *
+     * The panel cannot rewrite a skill itself, and pretending to would need a
+     * model, a key and a second opinion. What it can do is give the user's own
+     * agent the exact bytes and the constraints — which is the part the agent
+     * cannot derive — and make copying it one click.
+     */
+    function EditPanel({ edit, pending, onLoad }) {
+      if (pending) return h('div', { className: 'annot-busy' }, h('i', { className: 'annot-spin' }), '取这一段的行号与约束…');
+      if (!edit) {
+        return h(
+          'div',
+          null,
+          h('h2', null, '自然语言改'),
+          h('p', { className: 'annot-muted' }, '给出这个节点的精确行范围与改写约束，交给你的 agent 去改。'),
+          h('button', { className: 'annot-pill', style: { cursor: 'pointer' }, onClick: onLoad }, '生成改写上下文'),
+        );
+      }
+      if (edit.error) return h('p', { className: 'annot-error' }, edit.error);
+
+      const lines = [
+        `# 目标：${edit.skill} / ${edit.target.id}`,
+        `# 锚点：${edit.target.start}–${edit.target.end}（${edit.target.type}）`,
+        '',
+        edit.original,
+        '',
+        '# 约束',
+        ...edit.rules.map((rule) => `- ${rule}`),
+      ].join('\n');
+
+      return h(
+        'div',
+        null,
+        h('h2', null, '自然语言改'),
+        h(
+          'p',
+          { className: 'annot-muted' },
+          `只改第 ${edit.target.start}–${edit.target.end} 行。复制下面这段给你的 agent，改完运行 annot check 验证锚点。`,
+        ),
+        h('pre', { className: 'annot-raw', style: { maxHeight: 240, overflow: 'auto' } }, lines),
+        h(
+          'button',
+          {
+            className: 'annot-pill',
+            style: { cursor: 'pointer' },
+            onClick: () => {
+              // Clipboard availability is not something to bet the panel on: a
+              // failure falls back to the visible <pre>, which is selectable.
+              try {
+                navigator.clipboard.writeText(lines).catch(() => undefined);
+              } catch {
+                undefined;
+              }
+            },
+          },
+          '复制',
+        ),
       );
     }
 
@@ -801,6 +901,9 @@ window.__ModuleLoader__.load({
                   current,
                 }),
                 h(Detail, { doc, nodeId: state.selected }),
+                state.selected && doc
+                  ? h(EditPanel, { edit: state.edit, pending: state.editPending, onLoad: state.loadEdit })
+                  : null,
               ),
             ),
       );

@@ -10,7 +10,7 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 120 个测试，全绿
+node --test test/*.test.ts test/*.test.js   # 121 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>

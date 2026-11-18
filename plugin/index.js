@@ -1,19 +1,24 @@
 /**
  * Host half of annot-dsh.
  *
- * Five read-only routes, and no engine code in this package at all: each route
- * runs the annot CLI and returns its JSON. That is the whole point of the
- * "one engine, two shells" split — the DSH panel and `annot` on the command
- * line must not be able to disagree, and the cheapest way to guarantee that is
- * to have exactly one implementation.
+ * Read-only routes, and no engine code in this package at all: each route runs
+ * the annot CLI and returns its JSON. That is the whole point of the
+ * "one engine, two shells" split — the DSH panel and `annot` on the command line
+ * must not be able to disagree, and the cheapest way to guarantee that is to
+ * have exactly one implementation.
  *
  * Consequences worth knowing:
  *   - the panel needs an annot CLI to exist. `config.cli` names it; the default
  *     is `annot` on PATH. A missing CLI is reported per request instead of
  *     failing the boot, so the panel degrades to "not installed yet".
- *   - the write path (`annot annotate`) stays out of the routes on purpose: a
- *     web route that rewrites skill artifacts is a much larger permission than
- *     a panel that reads them.
+ *   - the write path (`annot annotate` writing into the user's skill tree) stays
+ *     out of the routes on purpose: a web route that rewrites skills is a much
+ *     larger permission than a panel that reads them. The one exception writes
+ *     to a temp directory the panel owns, because drawing a graph requires it.
+ *   - `context` is the read that makes editing possible: it returns a bounded
+ *     slice plus the constraints, so the *user's own agent* does the rewrite. A
+ *     panel that called a model itself would need a key, a bill and a second
+ *     opinion about what the skill should say.
  *
  * Every route carries the loopback fence used elsewhere in this profile family:
  * a direct loopback socket AND a loopback Host header, with forwarding headers
@@ -37,6 +42,7 @@ export const ROUTES = {
   list: '/api/annot/list',
   search: '/api/annot/search',
   flow: '/api/annot/flow',
+  context: '/api/annot/context',
   audit: '/api/annot/audit',
 };
 
@@ -496,6 +502,59 @@ function makeRoutes(config, logger) {
           return;
         }
         writeJson(res, 200, result.value);
+      },
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.context,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return;
+        const url = new URL(req.url ?? '/', 'http://x');
+        const skill = url.searchParams.get('path');
+        const node = url.searchParams.get('node');
+        if (skill === null || skill.trim() === '') {
+          writeJson(res, 400, { error: 'expected ?path=<skill> &node=<node id>' });
+          return;
+        }
+        if (node === null || node.trim() === '') {
+          writeJson(res, 400, { error: 'expected ?node=<node id>; open the skill first and pick a node' });
+          return;
+        }
+        const wanted = skill.trim();
+        const files = await scannedFiles();
+        const known = [...files].some((file) => file === wanted || file === `${wanted}/SKILL.md` || file === `${wanted}\\SKILL.md`);
+        if (!known) {
+          writeJson(res, 422, {
+            error: '这个 skill 不在最近一次扫描的结果里。点「刷新」重新扫描后再试。',
+            retryable: true,
+          });
+          return;
+        }
+        // Two CLI calls, not one: the edit context is addressed by node id and
+        // the id lives in the flow document. Re-annotating into the same temp
+        // directory is cheap (one file read, no writes when content is equal)
+        // and it is the only way to be sure the slice matches the graph the
+        // panel is showing.
+        const out = tempOutFor(wanted);
+        const annotated = await runCli(cli, ['annotate', wanted, '--out', out, '--json'], { nodeArgs, cwd: config?.cwd });
+        if (!annotated.ok) {
+          logger.warn(annotated.message);
+          writeJson(res, 422, { error: annotated.message });
+          return;
+        }
+        const flowPath = Array.isArray(annotated.value?.artifacts)
+          ? annotated.value.artifacts.map((a) => a.path).find((p) => typeof p === 'string' && p.endsWith('.flow.json'))
+          : undefined;
+        if (flowPath === undefined) {
+          writeJson(res, 422, { error: 'annotate did not report a flow.json path' });
+          return;
+        }
+        const sliced = await runCli(cli, ['context', flowPath, node.trim(), '--json'], { nodeArgs, cwd: config?.cwd });
+        if (!sliced.ok) {
+          writeJson(res, 422, { error: sliced.message });
+          return;
+        }
+        writeJson(res, 200, sliced.value);
       },
     },
     {

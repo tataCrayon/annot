@@ -2,7 +2,7 @@
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，108 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，121 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -223,7 +223,7 @@ annot search 审计 --body -- ~/.agents/skills   # 加搜正文
 
 ## DSH 插件壳：`plugin/`
 
-命令行之外，同一个引擎还有一块宿主内的面板。`plugin/` 是一个 DSH bundle：Host 半边注册五个只读路由，Client 半边在侧边栏注册一个 `Annot` 面板 + 主区页面。
+命令行之外，同一个引擎还有一块宿主内的面板。`plugin/` 是一个 DSH bundle：Host 半边注册路由，Client 半边在侧边栏注册一个 `Annot` 面板 + 主区页面。
 
 ```bash
 # 本机安装（profile 里会多一行 bundle）
@@ -239,15 +239,18 @@ dsh plugin --profile <profile> add <repo>/plugin
 |---|---|
 | `GET api/annot/status` | CLI 是否可用、扫描哪些根 |
 | `GET api/annot/selfcheck` | 浏览器半边声明与自述（面板不出现时先看这个） |
-| `POST api/annot/selfcheck/report` | 页面自述：`apply-enter` / `seat-available` / `registered` / `register-failed` |
+| `POST api/annot/selfcheck/report` | 页面自述：`apply-enter` / `seat-available` / `registered` / `register-failed` / `panel-mounted` |
 | `GET api/annot/list[?fresh=1]` | 按宿主同样的 rank 规则列 skill |
 | `GET api/annot/search?q=<text>[&body=1]` | 搜 skill；默认不搜正文 |
 | `GET api/annot/flow?path=<SKILL.md>` | 一张图（含服务端算好的布局） |
+| `GET api/annot/context?path=<skill>&node=<id>` | 这个节点的精确行范围 + 原文 + 改写约束（面板里「生成改写上下文」用的就是它） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（总分是完整的，只有表格被截断） |
 
-七条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 这一写操作**不在路由里**。
+八条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 写进用户 skill 树的那条路**不在路由里**；唯一的写是写到面板自己的临时目录，因为出图必须先有 flow.json。
 
-`plugin/` 有 29 个测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"、"报告路由不接受跨站伪造"。
+`plugin/` 有 30 个测试 + 6 个面板渲染测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"、"报告路由不接受跨站伪造"、"面板首帧不抛且列得出 skill"。
+
+`selfcheck` 的存在理由：面板"没出现"有三种完全不同的原因，而它们在宿主侧长得一模一样。`reports` 为空 = bundle 没到页面；有 `apply-enter` 无 `seat-available` = 宿主没声明席位；有 `registered` = 注册成功；有 `panel-mounted` = 有人真的打开过。`composed` 字段直读宿主的 `clientModules` 注册表，给出这个包是否已编入 `__DSH_BOOT__` 以及确切的 bundle URL。
 
 ---
 
@@ -266,7 +269,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 108 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 121 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果
