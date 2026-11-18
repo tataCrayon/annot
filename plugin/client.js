@@ -938,6 +938,44 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'annot';
 
     /**
+     * What the page's own DOM says about the panel list.
+     *
+     * Registration succeeding and a row being drawn are two different claims,
+     * and only the second one is visible to a person. The sidebar draws its
+     * panel list inside `<nav aria-label="全局面板">` and only when it has at
+     * least one entry — so "no nav at all" means the shell never saw any
+     * registrant, while "nav present, row absent" means it saw the list and
+     * filtered ours out (the shell hides rows the user unpinned into a More
+     * menu). Those have different causes and different fixes, and this is the
+     * only way to tell them apart from the Host side.
+     *
+     * Every selector here is a read: nothing is clicked, focused or scrolled,
+     * because this runs inside someone's live session.
+     */
+    function domFacts() {
+      try {
+        const navs = Array.from(document.querySelectorAll('nav'));
+        const panelNav = navs.find((node) => /全局面板|Global panels|全パネル/.test(node.getAttribute('aria-label') || ''));
+        return {
+          navCount: navs.length,
+          // The stock sidebar root marks its scroll viewport. If this is absent
+          // while a sidebar is clearly on screen, another bundle replaced the
+          // shell — and a replacement is free to not draw `sidebar.panellist`
+          // at all, which no registration on our side can fix.
+          stockShell: Boolean(document.querySelector('[data-sidebar-scrollport]')),
+          panelNav: Boolean(panelNav),
+          panelButtons: panelNav ? panelNav.querySelectorAll('button').length : 0,
+          // Our icon only exists inside a drawn row, so this is the direct
+          // answer to "is the row on screen".
+          ourIcons: document.querySelectorAll('[data-dsh-panel-entry="' + PANEL_ID + '"]').length,
+          text: String((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 240),
+        };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    /**
      * Tell the Host this bundle ran.
      *
      * Only the page can answer "did the browser half arrive", and only a person
@@ -1004,7 +1042,15 @@ window.__ModuleLoader__.load({
             );
           }),
         );
-        report({ event: 'registered' });
+        report({ event: 'registered', dom: domFacts() });
+        // The DOM is not settled at `apply` time, so look once more after the
+        // shell has had a chance to render the list. This is a single delayed
+        // read, not a poll: a failed answer must not turn into a busy loop.
+        // `typeof` rather than a bare call: a host that does not expose timers
+        // must not make a successful registration look like a failure.
+        if (typeof setTimeout === 'function') {
+          setTimeout(() => report({ event: 'dom-after-mount', dom: domFacts() }), 1500);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         report({ event: 'register-failed', message });
