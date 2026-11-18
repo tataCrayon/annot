@@ -23,6 +23,9 @@ export function detectDrift(doc: FlowDoc, currentText: string): DriftOutcome {
 
   for (const node of nodes) {
     const span = node.anchor.end - node.anchor.start + 1;
+    // Capture the original position first: the relocation steps below rewrite
+    // `node.anchor`, and reading `from` after that reported "moved 65 → 65".
+    const was = node.anchor.start;
     const window = lines.slice(node.anchor.start - 1, node.anchor.start - 1 + span);
     if (window.length === span && linesSha(window) === node.anchor.sha) continue;
 
@@ -30,20 +33,31 @@ export function detectDrift(doc: FlowDoc, currentText: string): DriftOutcome {
     if (exact !== undefined) {
       node.anchor = { ...node.anchor, start: exact, end: exact + span - 1 };
       node.flags.push('relocated');
-      stale.push({ id: node.id, label: node.label, reason: 'moved', from: node.anchor.start, to: exact });
+      stale.push({ id: node.id, label: node.label, reason: 'moved', from: was, to: exact });
       continue;
     }
 
-    const near = findSimilar(lines, span, node.raw, node.anchor.start);
+    // Nothing matches exactly, but the lines in the original window still share
+    // most of their words with the node: the edit happened *here*, in place.
+    // Reporting that as `broken` made every successful rewrite look like data
+    // loss, which is the opposite of what the check is for.
+    const inPlace = similarity(normalize(node.raw), normalize(window.map((l) => l.text).join(' ')));
+    if (inPlace >= 0.4) {
+      node.flags.push('relocated');
+      stale.push({ id: node.id, label: node.label, reason: 'edited', from: was, to: was });
+      continue;
+    }
+
+    const near = findSimilar(lines, span, node.raw, was);
     if (near !== undefined) {
       node.anchor = { ...node.anchor, start: near.start, end: near.start + span - 1 };
       node.flags.push('relocated');
-      stale.push({ id: node.id, label: node.label, reason: 'moved', from: node.anchor.start, to: near.start });
+      stale.push({ id: node.id, label: node.label, reason: 'moved', from: was, to: near.start });
       continue;
     }
 
     node.flags.push('stale');
-    stale.push({ id: node.id, label: node.label, reason: 'broken', from: node.anchor.start });
+    stale.push({ id: node.id, label: node.label, reason: 'broken', from: was });
   }
 
   return { skill: doc.skill, ok: stale.length === 0, stale, nodes };

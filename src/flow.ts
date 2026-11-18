@@ -66,17 +66,31 @@ function segment(unit: Unit): Segment[] {
   const inner = unit.lines.filter((l) => !/^\s*(```|~~~)/.test(l.text) && l.text.trim() !== '');
   if (inner.length < 2) return [{ lines: unit.lines }];
 
-  // Shape A: one `LABEL — text` per line.
+  // Shape A: one `LABEL — text` per line, optionally followed by continuation
+  // lines that belong to the line above.
+  //
+  // The earlier test required *every* line to match, which meant one added
+  // bullet under `VERDICT — 逐项判决` collapsed a four-step pipeline into a
+  // single card. A continuation line is indentation for the step above it, so
+  // it joins that step's anchor instead of dissolving the split.
   const pipeline = inner.map((l) => PIPELINE_LINE.exec(l.text));
-  if (pipeline.filter(Boolean).length >= 2 && pipeline.filter(Boolean).length >= inner.length - 1) {
-    return inner.map((line, i) => {
+  if (pipeline.filter(Boolean).length >= 2) {
+    const segments: Segment[] = [];
+    for (const [i, line] of inner.entries()) {
       const m = pipeline[i];
-      return {
-        lines: [line],
-        type: 'stage' as const,
-        label: m ? `${m[1]} — ${truncate(readable(m[2]), 60)}` : readable(line.text),
-      };
-    });
+      if (m) {
+        segments.push({
+          lines: [line],
+          type: 'stage' as const,
+          label: `${m[1]} — ${truncate(readable(m[2]), 60)}`,
+        });
+        continue;
+      }
+      const last = segments[segments.length - 1];
+      if (last) last.lines.push(line);
+      else segments.push({ lines: [line], type: 'stage' as const, label: readable(line.text) });
+    }
+    return segments;
   }
 
   // Shape B: a multi-line arrow chain, where continuation lines start with an

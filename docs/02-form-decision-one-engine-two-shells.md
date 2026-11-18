@@ -236,7 +236,7 @@ SKILL.md 是唯一真源，flow.json 是它的**语义投影 + 缓存**。入库
 | **M0** | 风险核实：CC 是否支持 MCP UI；R1 锚点还原率实测 | 两个数字写进文档，任意一个为负则调整方向 | 待做（M2 前必须） |
 | **M1** | 产品名 `annot` + `core` + `cli`：SKILL.md → flow.json + 单文件 HTML | grill-method 与 challenge 双 fixture 通过；HTML 离线双击可用；漂移检测可证 | ✅ **已完成**（55 测试 + 7 段沙箱验收全绿） |
 | **M2** | `dsh-plugin`：面板 + 懒索引 + 热开关 | 在真实 profile 里 `dsh plugin add` 后可开关；改 SKILL.md 面板 1s 内标 stale | 🟡 **Host 已完成并实测**（四路由 + 12 测试 + desktop profile 已装、`applied`）；**Client 面板写入但尚未在浏览器里看过渲染**；懒索引与 stale 标红未做 |
-| **M3** | 自然语言 patch（只生成 diff，不落盘） | 3 条指令 ≥2 条产出可接受 patch（见下） | 未开始 |
+| **M3** | 自然语言 patch（只生成 diff，不落盘） | 3 条指令 ≥2 条产出可接受 patch（见下） | ✅ **实验已过 3/3**（`sandbox/m3-experiment.ts`）；但产物仍是"agent 自己改文件 + `check` 判定"，`patch/` 模块与 unified diff 生成仍未写 |
 | **M4** | trace 反投影 + eval 面板（接 skill-eval-harness 格式） | 一次失败会话能定位到具体节点；variant.json 能出 lift | 未开始 |
 
 **M1 的实际交付**（与本文档原设想一致，记录偏差）：
@@ -251,6 +251,23 @@ SKILL.md 是唯一真源，flow.json 是它的**语义投影 + 缓存**。入库
 - 漂移检测的可信度由**一条测试**担保：未改动的 skill 必须 `check` 退出 0。这条测试在本轮抓到过一个真 bug（把隔行合并成单元后忘了补空行，导致所有人未改的文件都报漂移）。
 
 **M3 的验收标准要提前写死**（抄上一轮的验证实验）：手写 3 条改写指令，patch 只需微调即可接受 ≥2/3 才算过；锚点错位 >30% 直接判失败。
+
+**M3 实验结果（2026-11-18，`node sandbox/m3-experiment.ts`）：**
+
+| # | 指令 | 落点 | 结果 |
+|---|---|---|---|
+| 1 | VERDICT 拆三行并各写适用条件 | L61–64（1 行 → 4 行） | 13 relocated / 0 broken → 接受 |
+| 2 | COMMIT 加"判决卡不超过 10 行" | L62 | 0 relocated / 0 broken → 接受 |
+| 3 | ATTACK 后补"一次只问一个问题" | L60 | 1 relocated / 0 broken → 接受 |
+
+接受的判据是可判定的两条，不是"看着像"：编辑区重建后的节点 `raw` 必须逐字等于改写文本；重新 `detectDrift` 后 `broken` 必须为 0。
+
+**这个实验暴露了两个真 bug，都已修：**
+
+1. `segment()` 的 Shape A 要求每一行都匹配 `LABEL — text` 且匹配数 ≥ `inner.length - 1`，于是给 VERDICT 加一个续行就使整条四步流水线塌成一张卡片。改成续行归上一段后，同一份文件仍产出 26 节点，但结构不再脆弱。
+2. 漂移检测只有 `moved` / `broken`，没有"原地改了文本"这一档，导致**每一次成功的改写都被报成 `broken`**——锚点检查在它唯一该通过的场景下必然失败。新增 `edited`（窗口内词重叠 ≥ 0.4），`check` 现在对原地改写退出 0。
+
+**仍未做的是 `patch/` 模块**：`context` 交出该改哪几行，由宿主 agent 自己写文件，`check` 事后判定。原计划的"生成 unified diff 但不落盘"没有实现——实测表明少了它也能过判据，但也就没有可审查的 diff 留痕。
 
 **开源节奏建议**：M2 结束就发布 v0.1（DSH 侧可用的最小闭环），不要等 M4——开源项目的反馈速度比自研完整度更值钱。若 M2 风险过高，M1 的 CLI 已可独立发布为 `annot@0.1`（"给任意 skill 出可审的流程图 + 漂移检查"），这本身就是完整可用的工具。
 

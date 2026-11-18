@@ -111,6 +111,22 @@ test('drift: deleting a node breaks its anchor instead of pointing at a neighbou
   assert.equal(broken.reason, 'broken');
 });
 
+test('drift: an in-place rewrite is "edited", not "broken"', async () => {
+  const { text, doc } = await load('grill-method.md');
+  const target = doc.nodes.find((n) => n.anchor.start === 62) ?? doc.nodes[4];
+  const lines = text.split('\n');
+  lines[target.anchor.start - 1] = `${lines[target.anchor.start - 1]} 判决卡不超过 10 行。`;
+  const result = detectDrift(doc, lines.join('\n'));
+
+  // The failure this pins down: every successful `annot context` edit came back
+  // as "broken", so the check that is supposed to prove an edit was clean
+  // failed on exactly the edits it was written to approve.
+  const entry = result.stale.find((s) => s.id === target.id);
+  assert.ok(entry, `${target.id} was not reported at all`);
+  assert.equal(entry.reason, 'edited');
+  assert.equal(result.stale.filter((s) => s.reason === 'broken').length, 0);
+});
+
 test('drift: an untouched skill reports clean', async () => {
   const { text, doc } = await load('grill-method.md');
   const result = detectDrift(doc, text);

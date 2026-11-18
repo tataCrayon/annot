@@ -35,7 +35,7 @@
 | **原文证据** | `SKILL.md:28` — "run `validate workflow <candidate.json> --layout-json` and use the stable compiler receipt; solver internals are not authoring controls"；`references/delivery-contract.md:11` 的原子交付 |
 | **annot 的对应物** | `layoutNodes()`：最长顺序路径松弛定深度 → 每条深度带一行、带内按锚点起点排序 → 带居中 → 直线或四段折线 `M … L …`（2026-11-18 从"列网格 + 三次贝塞尔"改掉：列网格把 19 步的流水线切成三列七行，读序要回到顶部，箭头往回指，图看着就是错的） |
 | **借了什么** | "**布局必须是确定性的、可复算的**"这个要求。archify 用 `receipt` 表达同一件事；annot 用"两次 `layoutNodes()` 输出必须完全相等"的测试表达 |
-| **没借到** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt` 这类可调控件）；annot 只有一种布局，没有诊断、没有修复回路 |
+| **没借到** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt` 这类可调控件）；annot 只有一种布局，没有诊断、没有修复回路。**2026-11-18 实测更糟**：三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，布局已退化成竖排编号清单，而 `verify` 三视口全绿——诊断能证明"没溢出画布"，不能证明"画的是流程" |
 
 ### 1.3 typed JSON spec → renderer → validate → deliver，用退出码当契约
 
@@ -179,10 +179,11 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **视觉证据** | archify：4 个视口（1440×900 / 1600×1000 / 1920×1080 / 2048×1320）+ `scrollWidth <= innerWidth` 断言 + 明暗两套截图 + 机器回执 | `annot verify`：3 个视口 + 文档级 `scrollWidth <= innerWidth` 断言 + 节点数 / 重复 id / 标签溢出 / 画布外卡片 / **零网络请求** / 未捕获异常；退出码 0/1/2，跳过 ≠ 通过 | 🟡 **大半已补**（缺 2048×1320 与明暗两套；宁可少一个视口也不假装覆盖） |
 | **三种说法分离** | archify 明确区分 deliver（确定性检查）/ visual-check（浏览器证据）/ 视觉评审（人的判断），并写 "Passing one claim never implies either of the others" | README 与 `formatRenderReport` 现在分开讲：`verify` 只声明"确定性检查 + 浏览器证据"，**不声明视觉评审**；`--shot` 截出来的图是证据，不是交付物 | 🟡 概念已对齐，但没有像 archify 那样写成契约文档 |
 | **评估因果性** | skill-eval-harness：配对 with/without，只有差值算证据 | annot 的 flow.json **只是假设生成器**，不构成任何"变好了"的证据 | ❌ 不变，且**不应该**变——这是刻意的边界 |
-| **审计权重** | audit-slim：五个自问 + 明确判定动词（叙述性提及保留 / 指挥性引用改） | annot 的权重（×10 / ×5 / ×2 / ×1 / ×20）是**拍的常数，零校准数据** | ❌ 未校准。唯一的辩护是它只用来排序，不用来判定"合格与否" |
-| **模型可读性** | 都有 `references/`、typed schema、示例 | annot 有 fixture，但 `flow.json` 的 schema 没有写成 JSON Schema，第三方无法独立校验 | ❌ 未做 |
+| **审计权重** | audit-slim：五个自问 + 明确判定动词（叙述性提及保留 / 指挥性引用改） | 权重（×10 / ×5 / ×2 / ×1 / ×20）依然是**拍的常数，零校准数据**，但**只剩一份**：`src/audit.ts` 的 `defectsOf()` 是唯一来源，产物右侧的分数恒等于 `100 − 审计分`。此前两处各有一套权重、方向相反 | 🟡 **口径已统一，校准仍未做**。辩护仍是"只用来排序，不用来判定合格与否" |
+| **模型可读性** | 都有 `references/`、typed schema、示例 | `schema/flow.schema.json`（2020-12）已存在，`test/schema.test.js` 用真实写出的文档做 6 条契约断言 | ✅ **已补**（此前这条写的是"没有写成 JSON Schema"，已过期） |
+| **布局诊断** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt`） | `verify` 能证明"卡片没溢出画布"，但布局本身退化时**没有任何断言会失败** | ❌ 未做。实测三份真实 skill 全部 `bands == nodes`、`widest == 1`，几何已退化成竖排清单，`verify` 仍然通过——这是当前最该补的诊断 |
 
-**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平，剩下最大的实质差距在**审计权重没有任何校准数据**——那个数字会被人当真，但它现在只是排序工具。
+**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时没有任何诊断会说话**——三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，`verify` 三条视口全绿。视觉证据证明了"画出来了"，没有证明"画的是流程"。
 
 ---
 
@@ -195,12 +196,14 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 - ❌ "我们发明了给文档做标注" —— 这是印刷术时代的东西
 
 **能讲**的：
-- ✅ "**SKILL.md 天天被人改，改完你的图还对不对？**" —— 锚点 + 行哈希 + 三档漂移，让这句话有确定答案
+- ✅ "**SKILL.md 天天被人改，改完你的图还对不对？**" —— 锚点 + 行哈希 + 四档结果（`moved` / `edited` / `broken` / 同步），让这句话有确定答案
 - ✅ "**你的 36 个 skill，哪几个 annot 读错了？**" —— audit 给数字，不给人感受
-- ✅ "**改 skill 时，模型该动哪几行？**" —— context 把爆炸半径缩到行级
+- ✅ "**改 skill 时，模型该动哪几行？**" —— context 把爆炸半径缩到行级；3 条自然语言指令实测 3/3 通过
 - ✅ "**这张图画出来了没有？**" —— verify 返回 0/1，截图不再是"我看了眼，没问题"
 
 四条的共同点：**都不是"多给一个视图"，而是"给一个能返回 0/1 的判断"**。
+
+**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`widest == 1` 它不报警；要讲这句话，得先补布局诊断，再让 `branch` 边在真实数据里出现。
 
 这也解释了为什么 M1 不做插件 UI：插件 UI 是"多一个视图"，而 UI 加不进"图还对不对"这个判断。判断必须住在 CLI 里，才能被 CI、被 hook、被另一个 agent 调用。
 
@@ -229,4 +232,7 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **annot 的"删掉脚本必须失败"** | 同文件「a page whose script never runs is a failure, not a pass」 |
 | **annot 的零网络请求断言** | 同文件「a page that phones home fails the offline contract」 |
 | **annot 无任何 React/DSH/MCP 依赖** | `grep -E "from '(react\|@deepseek-ai\|@modelcontextprotocol)" src/` → 无命中 |
+| **annot 的 flow.json 有 JSON Schema** | `schema/flow.schema.json`（2020-12）+ `test/schema.test.js` 6 条契约断言 |
+| **annot 的 M3 通过率** | `node sandbox/m3-experiment.ts` → `accepted 3/3 → M3 bar (>=2/3) met` |
+| **annot 的布局退化（未修）** | `sandbox/fanout.mjs` 对三份真实 flow.json → `bands 19/26/13, fan-out bands 0, widest 1, branch edges 0` |
 | okf-skills 一仓库五形态 | GitHub README（2026-11-12 读） |

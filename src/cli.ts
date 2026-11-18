@@ -182,7 +182,10 @@ async function check(argv: string[]): Promise<number> {
   } else {
     process.stdout.write(`✗ ${result.skill}: ${result.stale.length} anchor(s) drifted in ${skillPath}\n`);
     for (const s of result.stale) {
-      const where = s.reason === 'moved' ? `moved ${s.from} → ${s.to}` : `broken at ${s.from}`;
+      const where =
+        s.reason === 'moved' ? `moved ${s.from} → ${s.to}`
+        : s.reason === 'edited' ? `edited in place at ${s.from}`
+        : `broken at ${s.from}`;
       process.stdout.write(`   - ${s.id} (${s.label}): ${where}\n`);
     }
   }

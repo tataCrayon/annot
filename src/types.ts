@@ -107,5 +107,20 @@ export interface Sidecar {
 export interface DriftReport {
   skill: string;
   ok: boolean;
-  stale: Array<{ id: string; label: string; reason: 'moved' | 'broken'; from: number; to?: number }>;
+  stale: Array<{
+    id: string;
+    label: string;
+    /**
+     * `moved`   the same text now sits elsewhere and the anchor followed it;
+     * `edited`  the anchor is still where it was, but its text changed in place;
+     * `broken`  the text is gone and nothing nearby resembles it.
+     *
+     * `edited` exists because without it every successful edit reported
+     * `broken`, which made `annot check` scream after exactly the operation it
+     * is supposed to verify — and a check that always fails is not a check.
+     */
+    reason: 'moved' | 'edited' | 'broken';
+    from: number;
+    to?: number;
+  }>;
 }
