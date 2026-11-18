@@ -1,4 +1,4 @@
-# 状态：M1 完成、M2 面板已注册成功并可查
+# 状态：M1 完成、M2 面板可查、图改成自上而下的分层 DAG
 
 > 写于 2026-11-18。给下一个接手的人（或下一个会话）看的第一份文件。
 > 这里只写"现在是什么"，不写"为什么"。为什么在 `docs/02`。
@@ -10,7 +10,7 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 122 个测试，全绿
+node --test test/*.test.ts test/*.test.js   # 132 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>
@@ -33,9 +33,11 @@ node src/cli.ts verify <flow.json> --shot <dir>
 | grill-method | 26 节点 / 25 边 / 3 个未绑定分支 | `annot annotate` 的 `forks` 行 |
 | challenge | 13 节点 / 12 边 / 0 分支 | 同上 |
 | 面板链路 | `composed.registered: true`，rev `9b0a9bca464d` | `GET /api/annot/selfcheck` |
-| 面板是否被打开过 | 这一轮**还没有** `panel-mounted` | 同上，`reports` |
+| 面板是否被打开过 | **是**，用户在 desktop profile 里点开了 Annot 行并出图 | 用户截图 + `dom-after-mount` 上报 |
 
-**关于"面板到底有没有出现"：** 宿主侧的证据已经齐了——包被编进模块图、bundle 能按 rev 取到、`apply-enter` 与 `seat-available` 在页面重载时连续出现过三次。缺的只有 `panel-mounted`，它要求有人真的点开侧边栏那一行。自动化打不开那个页面：索引请求要走 Connection 的浏览器认证，而 token 只在 `dsh web` 启动时打印。`tools/probe-panel.ts` 会明确报出这一点（`page reports: none` + 401），而不是假装通过。
+**关于"面板到底有没有出现"：** 这条路走完了。宿主侧：包被编进模块图、bundle 能按 rev 取到、`apply-enter` 与 `seat-available` 在页面重载时连续出现过三次。页面侧：`dom-after-mount`（+1.5 s）报 `panelButtons: 6, ourIcons: 1`，侧边栏文本是 `新会话 Ctrl + N 插件 自动化任务 Annot 更多 工作区 …`——Annot 行落在 `自动化任务` 与 `更多` 之间，紧贴 `工作区` 上方。用户随后自己点开、并贴了 `agent-dev-standards` 的整窗截图。
+
+**这也解释了"为什么一开始找不到"：** `panelList` 和 `工作区` 共用同一个 `.scrollArea`（`SidebarRoot.tsx:416-417` 那段 `<nav aria-label="全局面板">`），所以面板行会随工作区一起滚走；用户最初那张 767×330 的裁图正好从 `工作区` 开始，把这一行切在了外面。
 
 ## 面板的可观测性（这是这一轮真正补上的东西）
 
@@ -52,6 +54,24 @@ node src/cli.ts verify <flow.json> --shot <dir>
 `reports` 里出现的三条已实测填过：`registered: true`、`apply-enter` 与 `seat-available` 在三次页面重载中各出现一次。合成上报（探针、终端里的 curl）带 `probe: true`，selfcheck 把它们单独计进 `probes`，绝不混进 `reports`——否则"有人真的看过面板"这个信号谁都能伪造。
 
 `composed` 直读宿主的 `clientModules` 服务，并给出确切的 bundle URL（形如 `plugins/??annot-dsh/client.js&rev=<hash>`，rev 由 client.js 的 mtime/ctime/size 算出）。
+
+## 这一轮改了什么：图本身（2026-11-18）
+
+第一条用户反馈是"流程有点奇怪 / 显示不了核心流程 / 评估也看不到 / 可读性差 / UI 差"。前两条不是 UI 问题，是几何问题：
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| 读不出流程 | 布局是**列优先网格**：19 步被切成三列七行，读序到列底要回顶部，箭头往回指 | 改成**分层 DAG**：深度 = 最长顺序路径，深度向下、同级向右；连线只走直线或四段折线，不再用贝塞尔 |
+| 看不出第几步 | 画布上没有任何序号 | 左侧 88px 号牌槽，每条深度带一个 `01`…`19` 和一条细线，截图可引用 |
+| 卡片像一堆等价便签 | 六种粉彩填充，全部同权 | 白卡 + 1px 墨线 + 3px 顶线表示类型；只有"未落地分支数"和"低置信点"用锈色，其余一律墨色 |
+| 标题被切成半句 | 每字形 12.5/7px 的近似估算，且布局与绘制各算一次 | `wrapLabel()` 在**布局期**就把标签折成 `n.lines`，绘制直接消费；卡片宽度 360px，最多三行，超出以 `…` 结尾 |
+| 没有评估界面 | 侧栏只有图例和待办 | 侧栏顶部是 **0–100 结构分** 与逐条扣分理由（未落地分支 −6/个、低置信 −4/个、空正文、标点标题），与 `audit` 同源于 `flow.json` |
+
+视觉系统换成 Hallmark 的 terrazzo：off-white 纸面、墨线、锈色是唯一信号、零圆角（`--radius-card: 0`）、Syne / Onest / JetBrains Mono。`sloplint --genre modern-minimal` 报 0 FAIL / 0 REFLEX / 0 WARN。
+
+**新增的测试：`test/layout.test.ts`（7 条）。** 它守的是列网格那版**全部通过**的东西之外的部分：确定性、每个后继都在前驱下方且恰好一条带、同带不重叠、不出画布、长标签会折行、超三行以省略号收尾、空文档仍有画布。
+
+**已知没做到的：** 分支仍只画成虚线，没有把"守住 / 改良 / 替换"三条臂排成横向三列；`score` 的权重与 `audit` 一样是拍的，只能当排序读。
 
 ## 已知的洞（按严重度）
 
@@ -76,7 +96,7 @@ schema/      flow.schema.json（2020-12），6 条契约测试保证它和写出
 plugin/      DSH 宿主壳（JS，无构建）
   index.js   8 条路由，除自述与临时目录外只读
   client.js  侧边栏行 + 主区页面，经 __ModuleLoader__ 注册
-test/        121 个测试，含 30 个插件测试、6 个面板渲染测试、6 个 schema 契约测试
+test/        132 个测试，含 30 个插件测试、6 个面板渲染测试、6 个 schema 契约测试、10 个布局测试
 sandbox/     隔离验收脚本，不碰真实 ~/.agents
 tools/       人眼工具：inspect（表）/ explain（反查）/ probe-panel（打 GUI）
 docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照

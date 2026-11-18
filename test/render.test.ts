@@ -15,6 +15,7 @@ import vm from 'node:vm';
 import { buildFlow } from '../src/flow.ts';
 import { parseSkill } from '../src/parse.ts';
 import { renderHtml } from '../src/render.ts';
+import type { Layout } from '../src/render.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -72,7 +73,7 @@ function makeElement(tagName = 'div'): StubElement {
 }
 
 /** The two JSON payloads the page expects, plus a DOM just large enough. */
-async function runClient(): Promise<{ svg: StubElement; panel: StubElement }> {
+async function runClient(): Promise<{ svg: StubElement; panel: StubElement; layout: Layout }> {
   const text = await readFile(join(here, 'fixtures', 'grill-method.md'), 'utf8');
   const doc = buildFlow(parseSkill(text), text, { sourceFile: 'SKILL.md' });
   const html = renderHtml(doc);
@@ -105,7 +106,7 @@ async function runClient(): Promise<{ svg: StubElement; panel: StubElement }> {
   };
   const context = vm.createContext({ document, console, JSON, Math, String, Number, Object, Array, Set, Map });
   new vm.Script(client[1], { filename: 'annot-client.js' }).runInContext(context);
-  return { svg, panel };
+  return { svg, panel, layout: JSON.parse(layout[1]) as Layout };
 }
 
 test('the client script runs without throwing and paints nodes', async () => {
@@ -115,18 +116,30 @@ test('the client script runs without throwing and paints nodes', async () => {
 });
 
 test('a node group is emitted for every graph node', async () => {
-  const { svg } = await runClient();
+  const { svg, layout } = await runClient();
   const groups = svg.children.filter((child) => child.tagName === 'g');
   assert.ok(groups.length >= 20, `only ${groups.length} node groups painted`);
+  const sized = new Map(layout.nodes.map((n) => [n.id, n]));
   for (const group of groups) {
-    const rect = group.children.find((c) => c.tagName === 'rect');
-    assert.ok(rect, 'node group has no card');
-    assert.equal(rect.attrs.width, '244');
+    const card = group.children.find((c) => c.tagName === 'rect' && c.attrs.class === 'card');
+    assert.ok(card, 'node group has no card');
+    // The card takes its size from the layout, not from a constant in the
+    // painter: a hard-coded width here is how a card and its label drift apart.
+    const placed = sized.get(group.attrs['data-id']);
+    assert.ok(placed, `${group.attrs['data-id']} is not in the layout`);
+    assert.equal(card.attrs.width, String(placed.w));
+    assert.equal(card.attrs.height, String(placed.h));
+    // Height grows with the number of label lines, so a fixed height would
+    // clip the third line of a long label.
+    assert.ok(Number(card.attrs.height) > 62, `card height ${card.attrs.height} cannot hold two label lines`);
   }
 });
 
-test('the unfinished-work panel names the nodes a human must confirm', async () => {
+test('the detail panel answers "which step is this" and "which lines are they"', async () => {
   const { panel } = await runClient();
-  assert.match(panel.innerHTML, /<h2>节点<\/h2>/);
-  assert.match(panel.innerHTML, /锚点/);
+  // The first thing a reader asks of a flow cell is where it sits in the
+  // sequence; the second is which source lines produced it.
+  assert.match(panel.innerHTML, /<h2>第 1 步<\/h2>/);
+  assert.match(panel.innerHTML, /原文/);
+  assert.match(panel.innerHTML, /行哈希/);
 });

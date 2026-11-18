@@ -27,6 +27,14 @@ window.__ModuleLoader__.load({
       artifact: { fill: '#ecfdf5', stroke: '#059669', text: '#022c22' },
       external: { fill: '#f0f9ff', stroke: '#0284c7', text: '#082f49' },
     };
+    /** Type to its CSS custom property; every colour lives in the token block. */
+    const TYPE_VAR = {
+      stage: '--annot-stage',
+      decision: '--annot-decision',
+      gate: '--annot-gate',
+      artifact: '--annot-artifact',
+      external: '--annot-external',
+    };
     const TYPE_LABEL = { stage: '阶段', decision: '判定', gate: '门禁', artifact: '产物', external: '外部调用' };
     /** Node flags are machine names; a reviewer reads the consequence. */
     const FLAG_LABEL = {
@@ -61,7 +69,13 @@ window.__ModuleLoader__.load({
     //     instead of clipping it, and the layout stacks below 560px because a
     //     320px fixed track leaves the graph no width at all.
     const STYLE = `
-      .annot-root { display:flex; flex-direction:column; height:100%; min-height:0; font-size:13px; line-height:1.5; color: var(--dsw-alias-label-primary); }
+      .annot-root {
+        /* Node type inks are fixed so the graph reads the same in light and
+           dark; the plate, ink and accent follow the host theme. */
+        --annot-stage: #3b36a8; --annot-decision: #9a5b06; --annot-gate: #a8201a;
+        --annot-artifact: #14603f; --annot-external: #12557a;
+        display:flex; flex-direction:column; height:100%; min-height:0; font-size:13px; line-height:1.5; color: var(--dsw-alias-label-primary);
+      }
       .annot-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
       .annot-bar h1 { font-size:14px; margin:0; font-weight:650; }
       .annot-pill { font-size:11.5px; padding:1px 8px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); white-space:nowrap; }
@@ -94,11 +108,15 @@ window.__ModuleLoader__.load({
       .annot-tag.ok { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); }
       .annot-node { cursor:pointer; }
       .annot-node:focus-visible { outline:none; }
-      .annot-node:focus-visible rect:first-of-type { stroke-width:3; }
-      .annot-node rect { transition: filter .12s ease, stroke-width .12s ease; }
-      .annot-node:hover rect:first-of-type { filter: drop-shadow(0 2px 8px color-mix(in oklab, var(--dsw-alias-label-primary), transparent 78%)); stroke-width:2.4; }
-      .annot-node.sel rect:first-of-type { stroke-width:3; }
+      .annot-node:focus-visible rect.annot-card { stroke-width:3; }
+      .annot-node rect.annot-card { transition: stroke-width .12s ease; }
+      .annot-node:hover rect.annot-card { stroke-width:1.5; }
+      .annot-node:active rect.annot-card { stroke-width:2.5; }
+      .annot-node.sel rect.annot-card { stroke-width:2; }
       .annot-node text { pointer-events:none; }
+      .annot-mono { font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+      .annot-stepnum { fill: var(--dsw-alias-label-tertiary); font-family: ui-monospace, Consolas, monospace; font-size:11px; font-variant-numeric: tabular-nums; }
+      .annot-steprule { stroke: var(--dsw-alias-border-l1); stroke-width:1; }
       .annot-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:11px; color: var(--dsw-alias-label-tertiary); margin:0 0 10px; }
       .annot-legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
       .annot-tabs { display:flex; gap:6px; padding:0 14px; border-bottom:1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
@@ -157,9 +175,18 @@ window.__ModuleLoader__.load({
         svg.setAttribute('height', String(layout.height));
         svg.setAttribute('viewBox', `0 0 ${layout.width} ${layout.height}`);
 
+        // Step numbers in the left gutter, one rule per depth band. A 19-step
+        // pipeline is only followable if the eye has a number to hold onto.
+        for (const band of layout.bands || []) {
+          svg.appendChild(el('line', { class: 'annot-steprule', x1: 26, y1: band.y - 7, x2: layout.width - 26, y2: band.y - 7 }));
+          const num = el('text', { class: 'annot-stepnum', x: 26, y: band.y + 4 });
+          num.textContent = String(band.index + 1).padStart(2, '0');
+          svg.appendChild(num);
+        }
+
         for (const id of ['arrow-seq', 'arrow-branch']) {
-          const marker = el('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
-          marker.appendChild(el('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: id === 'arrow-branch' ? '#f97316' : '#94a3b8' }));
+          const marker = el('marker', { id, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' });
+          marker.appendChild(el('path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: id === 'arrow-branch' ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)' }));
           svg.appendChild(marker);
         }
 
@@ -168,13 +195,13 @@ window.__ModuleLoader__.load({
           const attrs = {
             d: edge.d,
             fill: 'none',
-            stroke: isBranch ? '#f97316' : '#cbd5e1',
-            'stroke-width': isBranch ? 1.6 : 1.7,
+            stroke: isBranch ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)',
+            'stroke-width': 1.2,
             'marker-end': `url(#${isBranch ? 'arrow-branch' : 'arrow-seq'})`,
           };
           // `setAttribute(key, 'null')` is not the same as omitting the attribute:
           // it sets a literal string the parser then drops. Only add when real.
-          if (isBranch) attrs['stroke-dasharray'] = '5 4';
+          if (isBranch) attrs['stroke-dasharray'] = '4 3';
           svg.appendChild(el('path', attrs));
         }
 
@@ -189,33 +216,42 @@ window.__ModuleLoader__.load({
             role: 'button',
             'aria-label': `${node.label}，${TYPE_LABEL[node.type] || node.type}，第 ${node.anchor.start} 到 ${node.anchor.end} 行`,
           });
-          const colors = NODE_COLORS[node.type] || NODE_COLORS.stage;
-          group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: node.h, rx: 10, fill: colors.fill, stroke: colors.stroke, 'stroke-width': 1.6 }));
-          group.appendChild(el('rect', { x: 0, y: 0, width: 4, height: node.h, rx: 2, fill: colors.stroke }));
 
-          const lines = fitLines(node.label, 30, 2);
+          // The plate: host-background card, ink hairline, and a 3px top rule
+          // carrying the type. Six pastel fills made every node look equally
+          // urgent, which is the opposite of what a flow is for.
+          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: node.h, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
+          group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: 3, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
+
+          const typeWord = el('text', { x: 12, y: 17, 'font-size': 10.5, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` });
+          typeWord.textContent = TYPE_LABEL[node.type] || node.type;
+          group.appendChild(typeWord);
+
+          // The layout already wrapped the label, so the panel cannot disagree
+          // with the card height the layout promised.
+          const lines = Array.isArray(node.lines) && node.lines.length ? node.lines : [node.label];
           lines.forEach((line, index) => {
-            const text = el('text', { x: 14, y: index === 0 ? 26 : 42, 'font-size': 12, fill: colors.text });
+            const text = el('text', { x: 12, y: 34 + index * 19, 'font-size': 13, fill: 'var(--dsw-alias-label-primary)' });
             text.textContent = line;
             group.appendChild(text);
           });
-          const meta = el('text', { x: 14, y: 55, 'font-size': 10, fill: colors.stroke, opacity: 0.9 });
-          meta.textContent = `${TYPE_LABEL[node.type] || node.type} · L${node.anchor.start}-${node.anchor.end}`;
+
+          const meta = el('text', { class: 'annot-mono', x: 12, y: node.h - 10, 'font-size': 10.5, fill: 'var(--dsw-alias-label-tertiary)' });
+          meta.textContent = `L${node.anchor.start}-${node.anchor.end} · ${Math.round(node.confidence * 100)}%`;
           group.appendChild(meta);
 
           // Two different "look at this" signals, both documented:
-          //   amber count  = branches this node declares whose other end is unknown
-          //   warn dot     = the extractor itself is under 60% sure of this node
+          //   count  = branches this node declares whose other end is unknown
+          //   dot    = the extractor itself is under 60% sure of this node
           const branches = Array.isArray(node.branches) ? node.branches : [];
           const open = branches.filter((branch) => !branch.to).length;
           if (open > 0) {
-            group.appendChild(el('circle', { cx: node.w - 14, cy: 13, r: 7, fill: '#fef3c7' }));
-            const badge = el('text', { x: node.w - 14, y: 16.5, 'font-size': 9.5, fill: '#92400e', 'text-anchor': 'middle', 'font-weight': 700 });
+            const badge = el('text', { class: 'annot-mono', x: node.w - 12, y: 17, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--dsw-alias-state-warn-primary)' });
             badge.textContent = String(open);
             group.appendChild(badge);
           }
           if (node.confidence < 0.6) {
-            group.appendChild(el('circle', { cx: node.w - (open > 0 ? 32 : 14), cy: 13, r: 4.5, fill: '#f59e0b', 'data-role': 'low-confidence' }));
+            group.appendChild(el('circle', { cx: node.w - 13, cy: node.h - 14, r: 3.2, fill: 'var(--dsw-alias-state-warn-primary)', 'data-role': 'low-confidence' }));
           }
 
           const choose = () => onSelect(node.id);
@@ -242,33 +278,6 @@ window.__ModuleLoader__.load({
         ),
         h('span', null, h('i', { style: { background: '#f59e0b', borderRadius: '50%' } }), '置信度低'),
       );
-    }
-
-    /** Rough CJK-aware wrap: the same budget the artifact uses, kept simple here. */
-    function fitLines(label, maxUnits, maxLines) {
-      const text = String(label || '');
-      const lines = [];
-      let current = '';
-      let units = 0;
-      for (const char of text) {
-        const width = /[\u3000-\u9fff\uff00-\uffef]/.test(char) ? 2 : 1;
-        if (units + width > maxUnits && current !== '') {
-          lines.push(current);
-          if (lines.length === maxLines) return trimLast(lines);
-          current = '';
-          units = 0;
-        }
-        current += char;
-        units += width;
-      }
-      if (current !== '') lines.push(current);
-      return trimLast(lines.slice(0, maxLines));
-    }
-
-    /** Drop trailing empty lines so an overflowed label never draws a blank row. */
-    function trimLast(lines) {
-      while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-      return lines.length === 0 ? [''] : lines;
     }
 
     // ---- host -------------------------------------------------------------
@@ -466,6 +475,7 @@ window.__ModuleLoader__.load({
       const node = doc.nodes.find((candidate) => candidate.id === nodeId);
       if (!node) return h('p', { className: 'annot-muted' }, '节点已不在当前图里。');
       const branches = Array.isArray(node.branches) ? node.branches : [];
+      const rank = Array.isArray(doc.nodes) ? doc.nodes.findIndex((candidate) => candidate.id === node.id) : -1;
       const flags = (Array.isArray(node.flags) ? node.flags : []).map((flag) =>
         h(
           'span',
@@ -476,7 +486,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         null,
-        h('h2', null, '节点'),
+        h('h2', null, rank >= 0 ? `第 ${rank + 1} 步` : '节点'),
         h(
           'dl',
           { className: 'annot-kv' },

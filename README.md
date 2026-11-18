@@ -2,7 +2,7 @@
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，121 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，132 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -154,7 +154,7 @@ annot verify .annot/my-skill/my-skill.flow.json
 |---|---|
 | 每个视口的节点数 == `flow.json` 的节点数 | 脚本没执行时页面"看起来"正常，只是空的 |
 | 同一个节点没有画两遍 | 重复 id 在图上表现为两个框，肉眼很难数出来 |
-| 标签没有溢出卡片 | 244px 卡片 + 中文，溢出是常态 |
+| 标签没有溢出卡片 | 360px 卡片 + 中文，溢出是常态 |
 | 卡片没有画到画布外 | 布局算错时边缘的框会消失 |
 | 文档没有横向滚动条 | 有横向滚动说明窗口尺寸被写死 |
 | 页面没有发起任何网络请求 | 单文件自包含的唯一硬证据 |
@@ -269,11 +269,13 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 121 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 132 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果
 node tools/probe-panel.ts                    # 打开运行中的 GUI，报告面板是否可见
+node tools/slot-usage.ts                     # 谁占了哪个宿主槽位
+node tools/panel-orders.ts                   # 侧边栏各面板的 order，重排前先看
 ```
 
 要求 Node ≥ 22.18（原生 TypeScript 类型剥离）。无构建步骤、零运行时依赖。

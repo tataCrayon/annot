@@ -1,0 +1,18 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "shape": "app screen",
+  "scope": "app",
+  "theme": "terrazzo",
+  "hero": "none: the masthead is the skill name plus four counted facts, not a centred hero",
+  "nav": "none: the host supplies the frame, the page is one screen",
+  "footer": "none: the page ends on the pending list",
+  "imagery": "none",
+  "photos": [],
+  "signature": "numbered band gutter on the left of every depth row, and a 0-100 structural score computed from the same flow.json",
+  "waived": [],
+  "prompt": "annot redesign: the skill flow panel must show the core procedure, its evaluation and a readable surface",
+  "date": "2026-11-18"
+ }
+]

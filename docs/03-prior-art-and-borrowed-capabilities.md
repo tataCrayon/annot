@@ -33,7 +33,7 @@
 |---|---|
 | **出处** | archify（`renderers/workflow/`、`layout contracts`、"stable compiler receipt"） |
 | **原文证据** | `SKILL.md:28` — "run `validate workflow <candidate.json> --layout-json` and use the stable compiler receipt; solver internals are not authoring controls"；`references/delivery-contract.md:11` 的原子交付 |
-| **annot 的对应物** | `layoutNodes()`：最长路径松弛分层 → 每列垂直居中 → 手写三次贝塞尔 `M … C …` |
+| **annot 的对应物** | `layoutNodes()`：最长顺序路径松弛定深度 → 每条深度带一行、带内按锚点起点排序 → 带居中 → 直线或四段折线 `M … L …`（2026-11-18 从"列网格 + 三次贝塞尔"改掉：列网格把 19 步的流水线切成三列七行，读序要回到顶部，箭头往回指，图看着就是错的） |
 | **借了什么** | "**布局必须是确定性的、可复算的**"这个要求。archify 用 `receipt` 表达同一件事；annot 用"两次 `layoutNodes()` 输出必须完全相等"的测试表达 |
 | **没借到** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt` 这类可调控件）；annot 只有一种布局，没有诊断、没有修复回路 |
 
