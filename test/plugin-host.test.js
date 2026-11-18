@@ -113,6 +113,19 @@ test('the report route accepts a loopback POST and files it', async () => {
   assert.equal(typeof res.body.reports[0].receivedAt, 'string');
 });
 
+test('a probe report never counts as the panel having been seen', async () => {
+  const { routes } = mount();
+  const report = routes.find((r) => r.path === ROUTES.report);
+  const check = routes.find((r) => r.path === ROUTES.selfcheck);
+
+  await call(report, fakeReq(ROUTES.report, { method: 'POST', body: '{"event":"panel-mounted","probe":true}' }));
+  await call(report, fakeReq(ROUTES.report, { method: 'POST', body: '{"event":"apply-enter"}' }));
+
+  const res = await call(check, fakeReq(ROUTES.selfcheck));
+  assert.equal(res.body.probes, 1, 'the synthetic report must be counted where it cannot be confused with a real one');
+  assert.deepEqual(res.body.reports.map((entry) => entry.event), ['apply-enter']);
+});
+
 test('the report route refuses a wrong method, a foreign caller, and a non-JSON body', async () => {
   const { routes } = mount();
   const report = routes.find((r) => r.path === ROUTES.report);

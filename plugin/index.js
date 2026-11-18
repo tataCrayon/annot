@@ -392,7 +392,12 @@ function makeRoutes(config, logger) {
           composed: describeComposed(selfcheckRoute && selfcheckRoute.composed, meta.name),
           // `reports` collects what the browser half saw, so a user who CAN see
           // the page turns their observation into data the Host can act on.
-          reports: pageReports,
+          // A synthetic POST (a probe, or someone at a terminal) must never be
+          // mistaken for a real mount, so entries carrying `probe: true` are
+          // listed separately. Otherwise the one signal that proves a human saw
+          // the panel becomes forgeable by anyone who can reach loopback.
+          reports: pageReports.filter((entry) => entry.probe !== true),
+          probes: pageReports.filter((entry) => entry.probe === true).length,
           bundleRoute: '/plugins',
         });
       },
