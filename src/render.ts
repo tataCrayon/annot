@@ -14,7 +14,7 @@
 import { defectsOf } from './audit.ts';
 import { depthOf } from './depth.ts';
 import { diagnose } from './diag.ts';
-import type { FlowDoc, FlowEdge, FlowNode, NodeType } from './types.ts';
+import type { FlowDoc, FlowEdge, FlowNode, Lane, NodeType } from './types.ts';
 
 const NODE_W = 360;
 /** Height of one wrapped label line at 13px. */
@@ -25,6 +25,18 @@ const PAD_TOP = 34;
 const FOOT_H = 26;
 /** One visible table row inside a card. */
 const ROW_H = 15;
+/** One subtitle line: smaller than a label line, so the two read as two ranks. */
+const SUB_H = 17;
+/**
+ * The canvas width the page is designed for.
+ *
+ * At a 1440 viewport the graph pane is 981px; this is the widest canvas that
+ * still fits it without a horizontal scrollbar once the gutter and padding are
+ * taken out. NODE_W is the floor: below it a card is too narrow to read.
+ */
+const MIN_CANVAS = 900;
+/** A card wider than this stops being a card and starts being a paragraph. */
+const NODE_W_MAX = 620;
 /** Room for the open arms drawn under a forking card. */
 const ARM_H = 26;
 const SIBLING_GAP = 28;
@@ -52,6 +64,8 @@ interface Placed extends FlowNode {
   slot: number;
   /** The label already broken into lines, so layout and paint cannot disagree. */
   lines: string[];
+  /** The subtitle, wrapped to one line or elided. */
+  subLines: string[];
   /** Table rows the card keeps visible, so a table is not just its header. */
   rows: string[];
   /** Guards whose target is unknown: drawn as open arms under the card. */
@@ -76,6 +90,16 @@ export interface Layout {
   edges: PlacedEdge[];
   /** One entry per depth band, for the numbered rules the page draws. */
   bands: Array<{ index: number; y: number; count: number }>;
+  /**
+   * Runs of consecutive bands that share a declared phase — or, failing that,
+   * the nearest heading that covers at least two cards.
+   *
+   * `release-checklist` writes `Phase 1：分支对比` / `Phase 2` / `Phase 3` and the
+   * picture showed none of it, because depth came only from sequence edges. The
+   * same mechanism names the other chapters: ten named groups reading down the
+   * page instead of thirty-four anonymous rows.
+   */
+  phaseRuns: Array<{ label: string; y: number; h: number; nodes: number; strong: boolean }>;
 }
 
 /**
@@ -187,11 +211,11 @@ function tableRows(raw: string, max = 6): string[] {
  * difference between "this skill has three outcomes" and a picture that looks
  * like a straight line while the source clearly forks.
  */
-function layoutArms(guards: string[]): Array<{ label: string; w: number }> {
+function layoutArms(guards: string[], cardW = NODE_W): Array<{ label: string; w: number }> {
   const kept = guards.slice(0, 4);
   if (kept.length === 0) return [];
   const gap = 8;
-  const box = (NODE_W - gap * (kept.length - 1)) / kept.length;
+  const box = (cardW - gap * (kept.length - 1)) / kept.length;
   return kept.map((guard) => {
     const label = clipToWidth(guard, box - 20, 11);
     return { label, w: Math.max(28, Math.min(box, textWidth(label, 11) + 20)) };
@@ -228,41 +252,62 @@ export function layoutNodes(doc: FlowDoc): Layout {
   }
 
   const ordered = [...bands.keys()].sort((a, b) => a - b);
-  const bandWidth = (count: number): number => count * NODE_W + Math.max(0, count - 1) * SIBLING_GAP;
-  const widest = Math.max(1, ...ordered.map((b) => bandWidth(bands.get(b)?.length ?? 0)));
-  const width = widest + PAD * 2 + GUTTER;
+  const widestCount = Math.max(1, ...ordered.map((b) => bands.get(b)?.length ?? 0));
+  const strip = (count: number, cardW: number): number =>
+    count * cardW + Math.max(0, count - 1) * SIBLING_GAP;
+
+  // The canvas never gets narrower than one comfortable card, and it uses the
+  // width it is given: at 1440 the pane is 981px and a 528px graph left 454px
+  // empty at every scroll position. The extra room goes to the card, not to
+  // padding — a wider card wraps a long label into fewer lines, and on
+  // `release-checklist` one saved line per card is a whole screen.
+  const width = Math.max(strip(widestCount, NODE_W) + PAD * 2 + GUTTER, MIN_CANVAS);
+  const cardW = Math.min(
+    NODE_W_MAX,
+    Math.max(NODE_W, Math.floor((width - PAD * 2 - GUTTER - (widestCount - 1) * SIBLING_GAP) / widestCount)),
+  );
+  const widestCardWidth = strip(widestCount, cardW);
 
   const placed: Placed[] = [];
   const bands_: Array<{ index: number; y: number; count: number }> = [];
+  /** The vertical extent of each band, so a phase run can bracket its members. */
+  const bandSpans = new Map<number, { y: number; h: number }>();
   let cursorY = PAD;
 
   for (const band of ordered) {
     const members = [...(bands.get(band) ?? [])].sort((a, b) => a.anchor.start - b.anchor.start);
+    const bandW = strip(members.length, cardW);
     const geometries = members.map((node) => {
-      const lines = wrapLabel(node.label, NODE_W - 28);
+      const lines = wrapLabel(node.label, cardW - 28);
+      // A second line the author already separated: the artifact, the
+      // expectation, the target. Without it the card is one truncated sentence
+      // and the command underneath stays invisible.
+      const subLines = node.subtitle ? wrapLabel(node.subtitle, cardW - 28, 1) : [];
       // A table is a rule, not a title: show its rows so the card carries the
       // requirement instead of hiding it behind the header.
       const rows = isTable(node.raw) ? tableRows(node.raw) : [];
-      const arms = layoutArms(node.branches.filter((b) => !b.to).map((b) => b.when));
-      const cardH = PAD_TOP + lines.length * LINE_H + rows.length * ROW_H + FOOT_H;
-      return { node, lines, rows, arms, cardH, h: cardH + (arms.length ? ARM_H : 0) };
+      const arms = layoutArms(node.branches.filter((b) => !b.to).map((b) => b.when), cardW);
+      const cardH = PAD_TOP + lines.length * LINE_H + subLines.length * SUB_H + rows.length * ROW_H + FOOT_H;
+      return { node, lines, subLines, rows, arms, cardH, h: cardH + (arms.length ? ARM_H : 0) };
     });
     const bandH = Math.max(...geometries.map((g) => g.h));
-    const left = PAD + GUTTER + (widest - bandWidth(members.length)) / 2;
+    const left = PAD + GUTTER + (widestCardWidth - bandW) / 2;
     bands_.push({ index: band, y: cursorY, count: members.length });
+    bandSpans.set(band, { y: cursorY, h: bandH });
 
     geometries.forEach((geometry, slot) => {
       placed.push({
         ...geometry.node,
         lines: geometry.lines,
+        subLines: geometry.subLines,
         rows: geometry.rows,
         arms: geometry.arms,
         cardH: geometry.cardH,
         band,
         slot,
-        x: left + slot * (NODE_W + SIBLING_GAP),
+        x: left + slot * (cardW + SIBLING_GAP),
         y: cursorY + (bandH - geometry.h) / 2,
-        w: NODE_W,
+        w: cardW,
         h: geometry.h,
       });
     });
@@ -308,7 +353,107 @@ export function layoutNodes(doc: FlowDoc): Layout {
     nodes: placed,
     edges,
     bands: bands_,
+    phaseRuns: phaseRuns(placed, bandSpans),
   };
+}
+
+/**
+ * The chapter bands, as rectangles over the bands they actually cover.
+ *
+ * Only *consecutive* bands join a run: `release-checklist` puts its phase
+ * headings in source order, so Phase 1 / 2 / 3 land in three contiguous runs.
+ * A label that reappears after another one produces two runs rather than one
+ * rectangle swallowing what sits between them.
+ *
+ * A run holding a single card is dropped. Measured on four real skills, 44 of
+ * 88 heading runs were singletons, and bracketing those produced more borders
+ * than structure.
+ */
+function phaseRuns(
+  placed: Placed[],
+  spans: Map<number, { y: number; h: number }>,
+): Layout['phaseRuns'] {
+  const runs: Layout['phaseRuns'] = [];
+  const bandsSorted = [...spans.keys()].sort((a, b) => a - b);
+  const labelOfBand = new Map<number, { label: string; strong: boolean }>();
+  const shared = sharedHeadings(placed);
+
+  // A declared phase wins over a mere heading: the author said "this is a stage".
+  for (const node of placed) {
+    const label = node.phase ?? nearestHeading(node, shared);
+    if (!label) continue;
+    const current = labelOfBand.get(node.band);
+    const strong = Boolean(node.phase);
+    if (!current || (strong && !current.strong)) labelOfBand.set(node.band, { label, strong });
+  }
+
+  let current: { label: string; strong: boolean; first: number; last: number; nodes: number } | undefined;
+  const flush = (): void => {
+    if (!current) return;
+    if (current.nodes >= 2) {
+      const top = spans.get(current.first);
+      const bottom = spans.get(current.last);
+      if (top && bottom) {
+        runs.push({
+          label: current.label,
+          y: top.y - 10,
+          h: bottom.y + bottom.h - top.y + 20,
+          nodes: current.nodes,
+          strong: current.strong,
+        });
+      }
+    }
+    current = undefined;
+  };
+
+  for (const band of bandsSorted) {
+    const members = placed.filter((p) => p.band === band);
+    const named = labelOfBand.get(band);
+    if (!named) {
+      flush();
+      continue;
+    }
+    if (current && current.label === named.label) {
+      current.last = band;
+      current.nodes += members.length;
+      continue;
+    }
+    flush();
+    current = { label: named.label, strong: named.strong, first: band, last: band, nodes: members.length };
+  }
+  flush();
+  return runs;
+}
+
+/**
+ * Heading paths that cover at least two cards.
+ *
+ * `release-checklist` has fifteen heading levels over thirty-four cards; the
+ * deepest one often holds exactly one card, which brackets nothing. Walking up
+ * until the group is shared is what turns fifteen labels into ten bands.
+ */
+function sharedHeadings(placed: Placed[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const node of placed) {
+    const path = node.anchor.heading ?? [];
+    for (let i = path.length; i > 0; i--) {
+      const key = path.slice(0, i).join(' › ');
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  const shared = new Set<string>();
+  for (const [key, count] of counts) if (count >= 2) shared.add(key);
+  return shared;
+}
+
+function nearestHeading(node: FlowNode, shared: Set<string>): string | undefined {
+  const path = node.anchor.heading ?? [];
+  for (let i = path.length; i > 0; i--) {
+    if (!shared.has(path.slice(0, i).join(' › '))) continue;
+    const label = path[i - 1].trim();
+    if (label) return label;
+  }
+  return undefined;
 }
 
 export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): string {
@@ -345,6 +490,7 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
     --tag-warn-rule: #d8bda8; --tag-ok-rule: #a9c6b6;
     --focus: #a34a1c;
     --stage: #3b36a8; --decision: #9a5b06; --gate: #a8201a; --artifact: #14603f; --external: #12557a;
+    --phase-soft: #efece2; --phase-rule: #c9c2b2;
     --font-display: "Syne", "Segoe UI", "Microsoft YaHei", ui-sans-serif, sans-serif;
     --font-body: "Onest", "Segoe UI", "Microsoft YaHei", ui-sans-serif, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
@@ -406,6 +552,11 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; }
   .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 8px; vertical-align: 0; }
   .legend span { white-space: nowrap; color: var(--ink-2); }
+  /* The lane key is words, not swatches: a lane is a role, and a role has no
+     colour. Two keys on the page, because type and lane answer two questions. */
+  .legend.lanes { display: grid; gap: 4px; }
+  .legend.lanes span { white-space: normal; color: var(--muted); }
+  .legend.lanes strong { color: var(--ink-2); font-weight: 500; margin-right: 4px; }
 
   .kv { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px 12px; font-size: 12.5px; margin: 0; }
   .kv dt { color: var(--muted); }
@@ -449,6 +600,13 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   .edge-label { fill: var(--accent-2); font-family: var(--font-body); font-size: 10.5px; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }
   .stepnum { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
   .steprule { stroke: var(--rule); stroke-width: 1; }
+  /* A phase band is the structure the author declared, drawn behind the cards.
+     It carries no type ink: the type is the card's business, the phase is the
+     page's. A label sits at the band's top-left, on the band itself. */
+  rect.phase { fill: var(--phase-soft); stroke: var(--phase-rule); stroke-width: 1; }
+  rect.phase.weak { fill: none; stroke-dasharray: 3 4; }
+  .phase-label { fill: var(--ink-2); font-family: var(--font-body); font-size: 11px; letter-spacing: .02em; }
+  .phase-label.weak { fill: var(--muted); }
   ::selection { background: var(--accent-soft); }
 
   @media (max-width: 1080px) {
@@ -496,9 +654,11 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
       <h2>形状</h2>
       ${shapeHtml}
       <h2>怎么读</h2>
-      <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。格子下方的橙色小条是<strong>没落地的分支臂</strong>：文件里写了这些结果，但抽取没能把它们接到任何一步。点开格子看它的行号与原文。</p>
+      <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。灰色底带是文件里<strong>自己声明的阶段</strong>（<code>Phase 1</code> / <code>阶段二</code> 这类小节）；虚线框是普通章节，只在它至少罩住两格时才画。每条带右上角的数字是它含的格子数。格子右下角写着<strong>谁做这件事</strong>。点开格子看它的行号与原文。</p>
       <h2>类型</h2>
       <div class="legend">${legend()}</div>
+      <h2>谁做</h2>
+      <div class="legend lanes">${laneKey()}</div>
       <h2>待人工确认</h2>
       <div id="todos"></div>
       <div id="panel"></div>
@@ -570,6 +730,35 @@ function legend(): string {
     .join('');
 }
 
+/**
+ * The lane key.
+ *
+ * Type and lane are different questions — "what kind of thing is this" versus
+ * "who does it" — so the page needs two keys, not a merged one. The lane has no
+ * colour of its own: it is a word in the card's corner, not a second palette.
+ */
+function laneKey(): string {
+  const lanes: Array<[Lane, string]> = [
+    ['reader', '你'], ['tool', '工具'], ['model', '模型'], ['output', '产物'],
+  ];
+  return lanes
+    .map(([lane, word]) => `<span><strong>${word}</strong> ${laneNote(lane)}</span>`)
+    .join('');
+}
+
+function laneNote(lane: Lane): string {
+  switch (lane) {
+    case 'reader':
+      return '读者自己做';
+    case 'tool':
+      return '命令 / 接口执行';
+    case 'model':
+      return '模型自行判断';
+    case 'output':
+      return '产出的文件或数据';
+  }
+}
+
 function labelOf(type: NodeType): string {
   switch (type) {
     case 'stage':
@@ -597,6 +786,7 @@ const CLIENT_JS = String.raw`
 const doc = JSON.parse(document.getElementById('flow-data').textContent);
 const layout = JSON.parse(document.getElementById('flow-layout').textContent);
 const LABEL = {stage:'阶段',decision:'判定',gate:'门禁',artifact:'产物',external:'外部调用'};
+const LANE = {reader:'你（读者）', tool:'工具/命令', model:'模型', output:'产物'};
 /* The type reaches the SVG as a CSS variable so all colour lives in :root. */
 const TYPE_VAR = {stage:'--stage',decision:'--decision',gate:'--gate',artifact:'--artifact',external:'--external'};
 
@@ -618,17 +808,6 @@ function escapeHtml(s) {
 const svg = svgEl('svg', { width: layout.width, height: layout.height, viewBox: '0 0 ' + layout.width + ' ' + layout.height, role: 'img', 'aria-label': doc.skill + ' 的流程' });
 
 /**
- * Step numbers live in the left gutter, one per band.
- *
- * They are what makes a 19-step pipeline followable: without a number the eye
- * has no anchor for "which one am I on", and a screenshot cannot be cited.
- */
-for (const band of (layout.bands || [])) {
-  svg.appendChild(svgEl('line', { class: 'steprule', x1: 26, y1: band.y - 7, x2: layout.width - 26, y2: band.y - 7 }));
-  svg.appendChild(svgText(26, band.y + 4, String(band.index + 1).padStart(2, '0'), { class: 'stepnum' }));
-}
-
-/**
  * A connection is a rule with an arrowhead, not a curve: the cards are plates
  * on paper, and a spec sheet draws a dependency as a line.
  */
@@ -640,6 +819,19 @@ const defs = svgEl('defs');
 });
 svg.appendChild(defs);
 
+/* The chapter bands sit *behind* everything: they group cards without hiding a
+   connector. A band is a wash, so the step rules and edges stay legible on top
+   of it; only the label is painted last, so it is never crossed out by a line. */
+for (const run of (layout.phaseRuns || [])) {
+  const weak = run.strong ? '' : ' weak';
+  svg.appendChild(svgEl('rect', { class: 'phase' + weak, x: 20, y: run.y, width: layout.width - 40, height: run.h }));
+}
+
+for (const band of (layout.bands || [])) {
+  svg.appendChild(svgEl('line', { class: 'steprule', x1: 26, y1: band.y - 7, x2: layout.width - 26, y2: band.y - 7 }));
+  svg.appendChild(svgText(26, band.y + 4, String(band.index + 1).padStart(2, '0'), { class: 'stepnum' }));
+}
+
 for (const e of layout.edges) {
   const isBranch = e.kind === 'branch';
   const path = svgEl('path', { d: e.d, class: 'edge' + (isBranch ? ' branch' : ''), 'marker-end': 'url(#' + (isBranch ? 'arrow-hot' : 'arrow') + ')' });
@@ -647,6 +839,16 @@ for (const e of layout.edges) {
   if (isBranch && e.showLabel && e.when) {
     svg.appendChild(svgText(e.labelX, e.labelY, clip(e.when, 22), { class:'edge-label', 'text-anchor':'middle' }));
   }
+}
+
+for (const run of (layout.phaseRuns || [])) {
+  const weak = run.strong ? '' : ' weak';
+  // Right-aligned, because the left gutter already carries the step numbers: a
+  // label at x=30 sits on top of "01".
+  svg.appendChild(svgText(layout.width - 30, run.y + 15, run.label + ' · ' + run.nodes, {
+    class: 'phase-label' + weak,
+    'text-anchor': 'end',
+  }));
 }
 
 for (const n of layout.nodes) {
@@ -665,20 +867,37 @@ for (const n of layout.nodes) {
     g.appendChild(svgText(12, 34 + i * 19, line, { 'font-size':13, style: 'fill: var(--rule-ink)' }));
   });
 
+  // The second line the author already separated: the expectation, the target,
+  // the artifact. It is smaller and lighter than the label so the two ranks
+  // read as title-then-detail rather than two competing sentences.
+  const subTop = 34 + (n.lines || []).length * 19 + 1;
+  (n.subLines || []).forEach(function (line, i) {
+    g.appendChild(svgText(12, subTop + i * 17, line, { 'font-size':11.5, style: 'fill: var(--ink-2)' }));
+  });
+
   // A table's rows sit under its header. Without them the card is a title with
   // the rule inside a tooltip, which is how "八项必填" became invisible.
-  const rowTop = 34 + (n.lines || []).length * 19 + 4;
+  const rowTop = subTop + (n.subLines || []).length * 17 - 1;
   (n.rows || []).forEach(function (row, i) {
     g.appendChild(svgText(12, rowTop + i * 15, row, { 'font-size':11, style: 'fill: var(--ink-2)' }));
   });
 
-  const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%';
+  const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%' +
+    (n.rule ? ' · ' + n.rule : '');
   g.appendChild(svgText(12, cardH - 10, foot, { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
+
+  // The lane answers "who does this", the type answers "what kind of thing is
+  // it". Two ranks in the same row: type left, lane right.
+  if (n.lane) {
+    g.appendChild(svgText(n.w - 12, 17, LANE[n.lane] || n.lane, {
+      'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--muted); letter-spacing:.02em',
+    }));
+  }
 
   const openBranches = n.branches.filter(function (b) { return !b.to; }).length;
   if (openBranches) {
-    g.appendChild(svgText(n.w - 12, 17, String(openBranches), {
-      'font-size':11, 'text-anchor':'end', style: 'fill: var(--accent); font-family: var(--font-mono)',
+    g.appendChild(svgText(n.w - 12, cardH - 10, openBranches + ' 未落地', {
+      'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--accent); font-family: var(--font-mono)',
     }));
   }
   if (n.confidence < 0.6) {
@@ -740,7 +959,8 @@ function select(n, g) {
     '<dl class="kv">' +
       '<dt>id</dt><dd><code>' + escapeHtml(n.id) + '</code></dd>' +
       '<dt>类型</dt><dd>' + LABEL[n.type] + '</dd>' +
-      '<dt>置信度</dt><dd>' + Math.round(n.confidence * 100) + '%（' + escapeHtml(n.source) + '）</dd>' +
+      '<dt>谁做</dt><dd>' + (LANE[n.lane] || n.lane) + '</dd>' +
+      '<dt>规则</dt><dd><code>' + escapeHtml(n.rule || '(none)') + '</code> · 常数 ' + Math.round(n.confidence * 100) + '%</dd>' +
       '<dt>原文</dt><dd><code>' + escapeHtml(doc.source.file) + ':' + n.anchor.start + '–' + n.anchor.end + '</code></dd>' +
       '<dt>行哈希</dt><dd><code>' + escapeHtml(n.anchor.sha.slice(0, 12)) + '</code></dd>' +
       '<dt>小节</dt><dd>' + escapeHtml((n.anchor.heading || []).join(' › ') || '(前言)') + '</dd>' +

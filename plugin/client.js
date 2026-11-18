@@ -36,6 +36,8 @@ window.__ModuleLoader__.load({
       external: '--annot-external',
     };
     const TYPE_LABEL = { stage: '阶段', decision: '判定', gate: '门禁', artifact: '产物', external: '外部调用' };
+    /* Orthogonal to the type: who performs the step. */
+    const LANE_LABEL = { reader: '你', tool: '工具', model: '模型', output: '产物' };
     /** Node flags are machine names; a reviewer reads the consequence. */
     const FLAG_LABEL = {
       'low-confidence': '置信度偏低',
@@ -117,6 +119,10 @@ window.__ModuleLoader__.load({
       .annot-mono { font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
       .annot-stepnum { fill: var(--dsw-alias-label-tertiary); font-family: ui-monospace, Consolas, monospace; font-size:11px; font-variant-numeric: tabular-nums; }
       .annot-steprule { stroke: var(--dsw-alias-border-l1); stroke-width:1; }
+      .annot-phase { fill: var(--dsw-alias-bg-elevated); stroke: var(--dsw-alias-border-secondary); stroke-width:1; }
+      .annot-phase-weak { fill: none; stroke-dasharray: 3 4; }
+      .annot-phase-label { fill: var(--dsw-alias-label-secondary); font-size:11px; letter-spacing:.02em; }
+      .annot-phase-weak + .annot-phase-label { fill: var(--dsw-alias-label-tertiary); }
       .annot-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:11px; color: var(--dsw-alias-label-tertiary); margin:0 0 10px; }
       .annot-legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
       .annot-tabs { display:flex; gap:6px; padding:0 14px; border-bottom:1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
@@ -190,6 +196,25 @@ window.__ModuleLoader__.load({
           svg.appendChild(marker);
         }
 
+        // The chapter bands the author declared, drawn behind the edges and the
+        // cards. The artifact draws these; without them the panel is one long
+        // undifferentiated ladder and the two pictures stop being one picture.
+        for (const run of layout.phaseRuns || []) {
+          svg.appendChild(el('rect', {
+            class: run.strong ? 'annot-phase' : 'annot-phase annot-phase-weak',
+            x: 20,
+            y: run.y,
+            width: layout.width - 40,
+            height: run.h,
+            fill: run.strong ? 'var(--dsw-alias-bg-elevated)' : 'none',
+            stroke: 'var(--dsw-alias-border-secondary)',
+            'stroke-width': 1,
+          }));
+          const label = el('text', { class: 'annot-phase-label', x: 30, y: run.y + 15 });
+          label.textContent = `${run.label} · ${run.nodes}`;
+          svg.appendChild(label);
+        }
+
         for (const edge of layout.edges) {
           const isBranch = edge.kind === 'branch';
           const attrs = {
@@ -223,6 +248,7 @@ window.__ModuleLoader__.load({
           const cardH = typeof node.cardH === 'number' ? node.cardH : node.h;
           const rows = Array.isArray(node.rows) ? node.rows : [];
           const arms = Array.isArray(node.arms) ? node.arms : [];
+          const subLines = Array.isArray(node.subLines) ? node.subLines : [];
 
           // The plate: host-background card, ink hairline, and a 3px top rule
           // carrying the type. Six pastel fills made every node look equally
@@ -243,11 +269,21 @@ window.__ModuleLoader__.load({
             group.appendChild(text);
           });
 
+          // The second line the author already separated: the expectation, the
+          // artifact, the target. Smaller and darker than a label line so the
+          // two ranks read as title-then-detail rather than two sentences.
+          const subTop = 34 + lines.length * 19 + 1;
+          subLines.forEach((line, index) => {
+            const text = el('text', { x: 12, y: subTop + index * 17, 'font-size': 11.5, fill: 'var(--dsw-alias-label-secondary)' });
+            text.textContent = line;
+            group.appendChild(text);
+          });
+
           // A table's rows, so "八项必填" is the rule and not a title. The
           // artifact draws these; the panel must draw the same card or the two
           // pictures stop being one picture.
           rows.forEach((row, index) => {
-            const text = el('text', { x: 12, y: 34 + lines.length * 19 + 4 + index * 15, 'font-size': 11, fill: 'var(--dsw-alias-label-secondary)' });
+            const text = el('text', { x: 12, y: subTop + subLines.length * 17 - 1 + index * 15, 'font-size': 11, fill: 'var(--dsw-alias-label-secondary)' });
             text.textContent = row;
             group.appendChild(text);
           });
@@ -256,14 +292,25 @@ window.__ModuleLoader__.load({
           meta.textContent = `L${node.anchor.start}-${node.anchor.end} · ${Math.round(node.confidence * 100)}%`;
           group.appendChild(meta);
 
+          // Who performs the step. The type rule above says what kind of thing
+          // this is; the lane says whether the reader, a command or the model
+          // does it. Both are on the card because the two questions differ.
+          if (node.lane) {
+            const laneWord = el('text', { x: node.w - 12, y: 17, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--dsw-alias-label-tertiary)' });
+            laneWord.textContent = LANE_LABEL[node.lane] || node.lane;
+            group.appendChild(laneWord);
+          }
+
           // Two different "look at this" signals, both documented:
           //   count  = branches this node declares whose other end is unknown
           //   dot    = the extractor itself is under 60% sure of this node
+          // The count sits in the footer, opposite the line range: the top-right
+          // corner belongs to the lane word.
           const branches = Array.isArray(node.branches) ? node.branches : [];
           const open = branches.filter((branch) => !branch.to).length;
           if (open > 0) {
-            const badge = el('text', { class: 'annot-mono', x: node.w - 12, y: 17, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--dsw-alias-state-warn-primary)' });
-            badge.textContent = String(open);
+            const badge = el('text', { class: 'annot-mono', x: node.w - 12, y: cardH - 10, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--dsw-alias-state-warn-primary)' });
+            badge.textContent = `${open} 未落地`;
             group.appendChild(badge);
           }
           if (node.confidence < 0.6) {

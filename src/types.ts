@@ -7,6 +7,17 @@
 
 export type NodeType = 'stage' | 'decision' | 'gate' | 'artifact' | 'external';
 
+/**
+ * Who performs a step. Orthogonal to {@link NodeType}: a gate can be checked by
+ * a person or by a command, and a step can be done by the reader or by a tool.
+ *
+ * The type answers "what kind of thing is this", the lane answers "who does it".
+ * A 34-step skill where `git fetch`, `MCP get_order` and "判断分支是否落后" all
+ * sit in one column is unreadable for exactly this reason: two of the three are
+ * not work the reader does.
+ */
+export type Lane = 'reader' | 'tool' | 'model' | 'output';
+
 export interface Anchor {
   /** Heading path the node was lifted from, outermost first. Empty for preamble. */
   heading: string[];
@@ -28,14 +39,34 @@ export interface FlowNode {
   id: string;
   type: NodeType;
   label: string;
+  /**
+   * Second line of the card: the artifact, condition or target the step
+   * produces. Absent when the source gives nothing short enough to be a line.
+   */
+  subtitle?: string;
+  /** Who performs this step. Defaults to `reader`. */
+  lane: Lane;
+  /**
+   * Chapter path the node sits in, already trimmed to the branch that names a
+   * phase (`Phase 1：分支对比`). Absent when the skill declares no phases.
+   */
+  phase?: string;
   /** Body of the node as shown in the UI; trimmed source text. */
   text: string;
   /** Exact source lines, used to relocate the anchor after an edit. */
   raw: string;
   anchor: Anchor;
   branches: Branch[];
-  /** How sure the extractor is that this unit really is this type, 0..1. */
+  /**
+   * Which classification rule fired, as a fixed constant per rule.
+   *
+   * This is NOT a probability: `decideRule` returns 0.65 for every paragraph, so
+   * thirteen nodes reading "65%" means "thirteen paragraphs", not "the model was
+   * 65% sure thirteen times". The UI therefore labels it 规则 rather than 置信度.
+   */
   confidence: number;
+  /** The rule that produced this node, so the score above can be explained. */
+  rule?: string;
   /** Human override reason, set when a sidecar annotation produced this node. */
   source?: 'extractor' | 'sidecar';
   /** Soft markers surfaced in the UI: low confidence, unresolved branch, etc. */
@@ -71,8 +102,17 @@ export interface FlowDoc {
   nodes: FlowNode[];
   edges: FlowEdge[];
   sections: Array<{ id: string; title: string; level: number; start: number }>;
+  /**
+   * Phase columns, outermost first, derived from headings that name a phase.
+   *
+   * `release-checklist` writes `Phase 1：分支对比` / `Phase 2` / `Phase 3` and the
+   * layout ignored all three, because depth came only from sequence edges. The
+   * phase list is the structure the author already declared.
+   */
+  phases: Array<{ id: string; label: string; nodes: number }>;
   stats: {
     byType: Record<NodeType, number>;
+    byLane: Record<Lane, number>;
     lowConfidence: number;
     stale: number;
     maxDepth: number;

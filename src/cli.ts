@@ -391,12 +391,21 @@ function report(doc: FlowDoc): string {
   const forks = doc.nodes.reduce((total, node) => total + node.branches.length, 0);
   const bound = doc.edges.filter((e) => e.kind === 'branch').length;
   const shape = diagnose(doc);
+  const phases = doc.phases.length
+    ? doc.phases.map((p) => `${p.label} (${p.nodes})`).join(' | ')
+    : '(none declared)';
   const lines = [
     `annotated ${doc.skill}`,
     `  source      ${doc.source.file} (${doc.source.lines} lines, sha ${doc.source.sha.slice(0, 12)})`,
     `  nodes       ${doc.nodes.length}  edges ${doc.edges.length}  forks ${forks} (bound ${bound}, unresolved ${forks - bound})`,
     `  by type     stage ${s.byType.stage} · decision ${s.byType.decision} · gate ${s.byType.gate} · artifact ${s.byType.artifact} · external ${s.byType.external}`,
-    `  to confirm  ${s.lowConfidence} node(s) below 60% confidence`,
+    // Who does the work. A skill where `git fetch` and "判断分支是否落后" share a
+    // column reads as a list; the lane is what separates them.
+    `  by lane     you ${s.byLane.reader} · tool ${s.byLane.tool} · model ${s.byLane.model} · output ${s.byLane.output}`,
+    `  phases      ${phases}`,
+    // The score beside a node is a constant of its rule, not a probability, so
+    // the label says 规则 and names the rule rather than implying doubt.
+    `  to confirm  ${s.lowConfidence} node(s) on a low score rule (< 60%)`,
     // The layout can be perfectly drawn and still not be a flow. These lines are
     // the only thing in the report that says so.
     formatDiagnosis(shape).trimEnd(),

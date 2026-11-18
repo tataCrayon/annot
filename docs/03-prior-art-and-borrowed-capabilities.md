@@ -181,9 +181,10 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **评估因果性** | skill-eval-harness：配对 with/without，只有差值算证据 | annot 的 flow.json **只是假设生成器**，不构成任何"变好了"的证据 | ❌ 不变，且**不应该**变——这是刻意的边界 |
 | **审计权重** | audit-slim：五个自问 + 明确判定动词（叙述性提及保留 / 指挥性引用改） | 权重（×10 / ×5 / ×2 / ×1 / ×20）依然是**拍的常数，零校准数据**，但**只剩一份**：`src/audit.ts` 的 `defectsOf()` 是唯一来源，产物右侧的分数恒等于 `100 − 审计分`。此前两处各有一套权重、方向相反 | 🟡 **口径已统一，校准仍未做**。辩护仍是"只用来排序，不用来判定合格与否" |
 | **模型可读性** | 都有 `references/`、typed schema、示例 | `schema/flow.schema.json`（2020-12）已存在，`test/schema.test.js` 用真实写出的文档做 6 条契约断言 | ✅ **已补**（此前这条写的是"没有写成 JSON Schema"，已过期） |
-| **布局诊断** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt`） | `verify` 能证明"卡片没溢出画布"，但布局本身退化时**没有任何断言会失败** | ❌ 未做。实测三份真实 skill 全部 `bands == nodes`、`widest == 1`，几何已退化成竖排清单，`verify` 仍然通过——这是当前最该补的诊断 |
+| **布局诊断** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt`） | `verify` 能证明"卡片没溢出画布"；`src/diag.ts` 补上"画的是不是流程"这一层，输出 5 类可判定的发现（`forks-not-drawn` / `single-column` / `stage-dominated` / `labels-truncated` / `over-split`），同时进 `annotate` 报告尾部与产物右侧的「形状」栏 | 🟡 **诊断已补，修复回路仍无**。archify 的 `via` / `channelX` / `labelAt` 是能改布局的旋钮，annot 只有一种布局：诊断说"19 个节点排成 19 条单卡带"，但没有参数可以改它 |
+| **结构分层** | archify 的 spec 自带 `col`（逻辑列秩）与 `phases[].fromCol/toCol`，还有 `lane` 与 `sublabel` | `layoutNodes()` 新增 `phaseRuns`（声明式阶段连成强带、罩住 ≥2 卡的最近标题连成弱带）、节点新增 `lane` 与 `subtitle`、画布宽度从固定的 528px 改成"用满图区" | 🟡 **借了"阶段是一等公民"与"卡片有第二行"两个判断，没借 `col`**：archify 让作者指定逻辑列，annot 仍然只能从顺序边推深度——这也是 `bands == nodes` 屡修不掉的根因 |
 
-**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时没有任何诊断会说话**——三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，`verify` 三条视口全绿。视觉证据证明了"画出来了"，没有证明"画的是流程"。
+**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平，结构分层也从 archify 借来了"阶段是一等公民"；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时，诊断会说话了但没人能改它**——三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，`verify` 三条视口全绿。`diag` 现在会把这件事报出来，但没有 `col` 那样的作者可控旋钮去修。
 
 ---
 
@@ -203,7 +204,7 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 
 四条的共同点：**都不是"多给一个视图"，而是"给一个能返回 0/1 的判断"**。
 
-**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`widest == 1` 它不报警；要讲这句话，得先补布局诊断，再让 `branch` 边在真实数据里出现。
+**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`diag` 现在会把 `widest == 1` 报出来但改不掉它；要讲这句话，得先让 `branch` 边在真实数据里出现，再有 `col` 那样的作者可控旋钮。
 
 这也解释了为什么 M1 不做插件 UI：插件 UI 是"多一个视图"，而 UI 加不进"图还对不对"这个判断。判断必须住在 CLI 里，才能被 CI、被 hook、被另一个 agent 调用。
 
@@ -216,6 +217,7 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | archify 单文件自包含 HTML | `~/.agents/skills/archify/SKILL.md:13` |
 | archify 用退出码当契约、禁止把非 0 说成成功 | 同上 `:35`、`:137` |
 | archify 有 layout compiler 与 receipt | 同上 `:28`；`references/delivery-contract.md:11` |
+| archify 的 spec 自带逻辑列与阶段范围 | 同上 `:28` 附近的 layout contract 段（`col` 0..5、`phases[].fromCol/toCol`、`lane`、`sublabel`）；本机 v2 布局契约另有像素级约束（相邻秩基线 120px、同泳道净空 ≥8px、直连段 ≥8px） |
 | archify 原子交付 + 失败保留上一个可信产物 | `references/delivery-contract.md:11` |
 | archify 三 claim 分离 | `references/delivery-contract.md:19-25` |
 | archify 多视口浏览器证据 | `references/delivery-contract.md:36-43` |

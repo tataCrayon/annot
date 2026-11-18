@@ -26,6 +26,20 @@
     },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
     "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "phases": {
+      "type": "array",
+      "description": "Columns the author declared, one per heading that names a stage (`Phase 1`, `阶段二`, `Step 3`). Empty when the skill declares none; the layout then falls back to pure sequence depth.",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "nodes"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string", "pattern": "^p\\d+$" },
+          "label": { "type": "string", "minLength": 1, "description": "The heading text, trimmed to what a column header can hold." },
+          "nodes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
     "sections": {
       "type": "array",
       "items": {
@@ -42,7 +56,7 @@
     },
     "stats": {
       "type": "object",
-      "required": ["byType", "lowConfidence", "stale", "maxDepth"],
+      "required": ["byType", "byLane", "lowConfidence", "stale", "maxDepth"],
       "additionalProperties": true,
       "properties": {
         "byType": {
@@ -55,6 +69,18 @@
             "gate": { "type": "integer", "minimum": 0 },
             "artifact": { "type": "integer", "minimum": 0 },
             "external": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "byLane": {
+          "type": "object",
+          "description": "Who performs each step. Orthogonal to `byType`: `git fetch` is a stage the tool runs, `判断分支是否落后` is a stage the reader runs.",
+          "required": ["reader", "tool", "model", "output"],
+          "additionalProperties": true,
+          "properties": {
+            "reader": { "type": "integer", "minimum": 0 },
+            "tool": { "type": "integer", "minimum": 0 },
+            "model": { "type": "integer", "minimum": 0 },
+            "output": { "type": "integer", "minimum": 0 }
           }
         },
         "lowConfidence": { "type": "integer", "minimum": 0 },
@@ -82,7 +108,7 @@
     },
     "node": {
       "type": "object",
-      "required": ["id", "type", "label", "text", "raw", "anchor", "branches", "confidence", "flags"],
+      "required": ["id", "type", "label", "lane", "text", "raw", "anchor", "branches", "confidence", "flags"],
       "additionalProperties": true,
       "properties": {
         "id": { "type": "string", "minLength": 1, "description": "Unique within the document; a slug of the label, suffixed on collision. Never reassigned by an edit." },
@@ -91,6 +117,18 @@
           "description": "stage = a step, decision = a fork, gate = a rule that can stop the flow, artifact = an output shape, external = a call out of the skill."
         },
         "label": { "type": "string", "minLength": 1 },
+        "subtitle": {
+          "type": "string",
+          "description": "Second line of the card: the artifact, condition or expectation the source states next to the step. Absent when the source offers nothing short and authored — never synthesised."
+        },
+        "lane": {
+          "enum": ["reader", "tool", "model", "output"],
+          "description": "Who performs the step. Orthogonal to `type`; drives the swimlane the card is drawn in."
+        },
+        "phase": {
+          "type": "string",
+          "description": "The heading that names the stage this node belongs to (`Phase 2：UAT vs PROD 工单对齐`). Absent when no enclosing heading names a stage."
+        },
         "text": { "type": "string", "description": "Readable body for the UI, newlines collapsed, truncated." },
         "raw": { "type": "string", "description": "The exact source lines. An edit is only safe against this, not against `text`." },
         "anchor": { "$ref": "#/$defs/anchor" },
@@ -106,7 +144,13 @@
             }
           }
         },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The constant attached to the rule in `rule`, NOT a probability. `paragraph` always scores 0.65, so thirteen nodes reading 65% means thirteen paragraphs, not thirteen confident guesses. The UI labels it 规则 for this reason."
+        },
+        "rule": { "type": "string", "description": "Which classification rule produced this node (`paragraph`, `table-of-modes`, `pinned-marker`, …), so the score beside it can be explained." },
         "source": { "enum": ["extractor", "sidecar"] },
         "flags": {
           "type": "array",

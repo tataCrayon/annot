@@ -11,6 +11,7 @@ import type {
   FlowDoc,
   FlowEdge,
   FlowNode,
+  Lane,
   NodeFlag,
   NodeType,
   Sidecar,
@@ -34,6 +35,21 @@ const BRANCH_COND = /^\s*(?:[-*+]|\d+[.)])?\s*(?:if\b|when\b|如果|若|当)/i;
 const INLINE_ELSE = /[:：]\s*(.+?)\s*[;；]\s*(?:否则|else)\s*(.+?)\s*$/i;
 const PINNED_MARKER = /<!--\s*sf:([a-z0-9_-]+)\s*-->/i;
 const TABLE_DATA_ROW = /^\s*\|/;
+/** A fenced block's first line is a language tag, never a step name. */
+const CODE_TAG = /^(?:bash|sh|shell|zsh|fish|json|jsonc|javascript|js|typescript|ts|tsx|jsx|python|py|yaml|yml|toml|sql|http|text|txt|markdown|md|diff|xml|html|css|go|java|rust|rb|php|console|powershell|ps1|bat|cmd|ini|conf|env|dockerfile|makefile|mermaid|csv|graphql|proto|nix|lua|perl|r|swift|kotlin|scala|dart|elixir|erlang|haskell|clj|vim|tex)$/i;
+/** Steps the model itself performs, rather than the reader or a command. */
+const MODEL_WORDS = /让模型|模型自己|由模型|LLM|让 AI|AI 自己|自行判断|自主判断/i;
+/** A heading that names a stage of the pipeline rather than a topic. */
+const PHASE_HEADING = /^(?:phase|阶段|步骤|step|part|第\s*[一二三四五六七八九十\d]+\s*(?:阶|步|段|部分))(?:\s|[:：]|$)/i;
+/**
+ * How much of the source a label may keep before the extractor cuts it.
+ *
+ * The card wraps a label to three lines of 360px at 13px, which is about 83 CJK
+ * characters — so the old ceiling of 48 cut every long step a full line early.
+ * Measured on `release-checklist`, 18 of 34 labels ended in an ellipsis at 48.
+ */
+const LABEL_MAX = 72;
+const SUBTITLE_MAX = 56;
 
 export interface BuildOptions {
   sidecar?: Sidecar;
@@ -137,26 +153,29 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
   for (const section of skill.sections) {
     for (const unit of section.units) {
       for (const piece of segment(unit)) {
+        // `segment()` returns pieces of one unit, so every derived fact below
+        // describes the same source range the anchor does.
+        const part: Unit = { kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines };
         const rule = piece.type
           ? { type: piece.type, confidence: 0.85, why: 'declared-pipeline' }
-          : classify({ kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines });
+          : classify(part);
         const anchor = {
           heading: section.heading,
           start: piece.lines[0].n,
           end: piece.lines[piece.lines.length - 1].n,
           sha: linesSha(piece.lines),
         };
-        const patch = matchSidecar(options.sidecar, { kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines }, anchor);
+        const patch = matchSidecar(options.sidecar, part, anchor);
         if (patch?.ignore) continue;
 
         const type = patch?.type ?? rule.type;
-        const autoLabel = piece.label ?? buildLabel({ kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines }, type);
+        const autoLabel = piece.label ?? buildLabel(part, type);
         const label = patch?.rename ?? autoLabel;
         const id = uniqueId(label, used);
         const text = piece.lines.map((l) => readable(l.text)).filter(Boolean).join(' ').slice(0, 400);
         const raw = piece.lines.map((l) => l.text).join('\n');
         const branches = dedupeBranches([
-          ...extractBranches({ kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines }, type),
+          ...extractBranches(part, type),
           ...(piece.branches ?? []),
           ...(patch?.branches ?? []),
         ]);
@@ -165,11 +184,17 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
           id,
           type,
           label,
+          // A human rename means a human knows what the card says; do not
+          // second-guess it with a machine subtitle.
+          subtitle: patch?.rename ? undefined : buildSubtitle(part, label),
+          lane: laneOf(part, type),
+          phase: phaseOf(section.heading),
           text,
           raw,
           anchor,
           branches,
           confidence: patch?.confirm ? 1 : patch?.type || patch?.rename ? Math.max(rule.confidence, 0.9) : rule.confidence,
+          rule: rule.why,
           source: patch ? 'sidecar' : 'extractor',
           flags: [],
         });
@@ -199,6 +224,7 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
       level: s.level,
       start: s.startLine,
     })),
+    phases: computePhases(nodes),
     stats,
   };
 }
@@ -270,15 +296,109 @@ function buildLabel(unit: Unit, type: NodeType): string {
   const cells = unit.lines
     .filter((l) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(l.text))
     .map((l) => readable(l.text).replace(/\s*\|\s*/g, ' · '))
-    .filter(Boolean);
+    .filter(meaningful);
 
   if (kindOf(unit.lines) === 'table') {
     const header = cells[0] ?? type;
-    return truncate(header, 48) || type;
+    return truncate(header, LABEL_MAX) || type;
   }
 
-  const first = cells[0] ?? type;
-  return truncate(first, 48) || type;
+  // A fenced block's first line is the fence itself. Reading it as the label
+  // produced cards titled "bash" and "json" — the language tag, not the step.
+  // Six of 92 nodes in four real skills did this, and the whole command was
+  // invisible underneath.
+  const content = cells.filter((c) => !CODE_TAG.test(c));
+  const first = content[0] ?? type;
+  return truncate(stripHeadingMark(first), LABEL_MAX) || type;
+}
+
+/**
+ * Can this line become a card title at all?
+ *
+ * A fenced JSON block's first line is `{`; a table's second row is `|---|---|`.
+ * Neither is a step, and both used to win the "first line" race.
+ */
+function meaningful(text: string): boolean {
+  if (!/[\p{L}\p{N}]/u.test(text)) return false;
+  if (/^\s*\|?[\s:|-]+\|?\s*$/.test(text)) return false;
+  return true;
+}
+
+/** `# Title` inside a fenced markdown sample is the title, not an H1. */
+function stripHeadingMark(text: string): string {
+  return text.replace(/^#{1,6}\s+/, '').trim();
+}
+
+/**
+ * Second line of a card: the thing the step yields, when the source states it
+ * next to the step.
+ *
+ * Deliberately narrow, because a fabricated subtitle is worse than an empty one.
+ * It fires in exactly two shapes the author already wrote:
+ *
+ *   - a shell line whose trailing comment says what success looks like
+ *     (`node gateway.js --status  # 有输出即为正常`);
+ *   - an intro line ending in a colon, followed by the detail it introduces.
+ *
+ * A list's second bullet is NOT a subtitle: the bullets are parallel steps, and
+ * promoting one of them to "detail of the first" would misreport the source.
+ */
+function buildSubtitle(unit: Unit, label: string): string | undefined {
+  const kind = kindOf(unit.lines);
+
+  if (kind === 'code') {
+    const inner = unit.lines
+      .map((l) => l.text)
+      .filter((t) => !/^\s*(```|~~~)/.test(t) && t.trim() !== '');
+    for (const line of inner) {
+      const comment = /\s#+\s*(.+)$/.exec(line);
+      if (comment) return truncate(readable(comment[1]), SUBTITLE_MAX);
+    }
+    return undefined;
+  }
+
+  if (kind === 'list' || kind === 'table') return undefined;
+
+  const lines = unit.lines.map((l) => readable(l.text)).filter(meaningful);
+  const intro = lines[0];
+  const detail = lines[1];
+  if (!intro || !detail) return undefined;
+  if (!/[:：]$/.test(intro)) return undefined;
+  if (detail.length < 4 || CODE_TAG.test(detail)) return undefined;
+  const short = detail.length <= SUBTITLE_MAX ? detail : `${detail.slice(0, SUBTITLE_MAX - 1)}…`;
+  return short === label ? undefined : short;
+}
+
+/**
+ * Who does this step.
+ *
+ * Orthogonal to the type: a gate can be checked by a person or by a command.
+ * The lane is what stops `git fetch` and "判断分支是否落后" from being drawn in
+ * the same column, which is the single biggest reason a 34-step skill reads as
+ * an undifferentiated list.
+ */
+function laneOf(unit: Unit, type: NodeType): Lane {
+  if (type === 'artifact') return 'output';
+  if (type === 'external') return 'tool';
+  if (kindOf(unit.lines) === 'code') return 'tool';
+  const text = unit.lines.map((l) => l.text).join('\n');
+  if (MODEL_WORDS.test(text)) return 'model';
+  return 'reader';
+}
+
+/**
+ * The phase a heading declares, if it declares one.
+ *
+ * `release-checklist` writes `Phase 1：分支对比`, `Phase 2：UAT vs PROD 工单对齐`,
+ * `Phase 3：生成 CheckList`. All three were discarded because layout depth came
+ * only from sequence edges, so the picture showed a flat ladder where the
+ * author had drawn three bands.
+ */
+function phaseOf(heading: string[]): string | undefined {
+  for (let i = heading.length - 1; i >= 0; i--) {
+    if (PHASE_HEADING.test(heading[i])) return truncate(heading[i].trim(), 28);
+  }
+  return undefined;
 }
 
 function truncate(text: string, max: number): string {
@@ -479,14 +599,32 @@ function pushFlag(node: FlowNode, flag: NodeFlag): void {
 function computeStats(nodes: FlowNode[], edges: FlowEdge[]): FlowDoc['stats'] {
   const byType = { stage: 0, decision: 0, gate: 0, artifact: 0, external: 0 } as Record<NodeType, number>;
   for (const n of nodes) byType[n.type]++;
+  const byLane = { reader: 0, tool: 0, model: 0, output: 0 } as Record<Lane, number>;
+  for (const n of nodes) byLane[n.lane]++;
   return {
     byType,
+    byLane,
     lowConfidence: nodes.filter((n) => n.flags.includes('low-confidence')).length,
     stale: nodes.filter((n) => n.flags.includes('stale')).length,
     // Flow depth, not heading depth. It used to be `anchor.heading.length`, so a
     // 19-step pipeline reported 2 while the canvas drew 19 bands.
     maxDepth: maxDepthOf(nodes, edges),
   };
+}
+
+/**
+ * The declared phases, in source order, with how many nodes each holds.
+ *
+ * Built from the nodes rather than the sections so a phase with no nodes never
+ * becomes an empty column on the canvas.
+ */
+function computePhases(nodes: FlowNode[]): FlowDoc['phases'] {
+  const seen = new Map<string, number>();
+  for (const node of nodes) {
+    if (!node.phase) continue;
+    seen.set(node.phase, (seen.get(node.phase) ?? 0) + 1);
+  }
+  return [...seen.entries()].map(([label, count], i) => ({ id: `p${i}`, label, nodes: count }));
 }
 
 function matchSidecar(

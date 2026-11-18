@@ -161,6 +161,15 @@ test('the panel draws the same card the artifact draws', () => {
   assert.match(SOURCE, /node\.cardH/, 'the panel ignores the plate height');
   assert.match(SOURCE, /Array\.isArray\(node\.rows\)/, 'table rows are not drawn');
   assert.match(SOURCE, /Array\.isArray\(node\.arms\)/, 'unresolved forks are not drawn');
+  // The subtitle is a second line the extractor now produces; a panel that
+  // ignores it drops the artifact/expectation half of every card it touches.
+  assert.match(SOURCE, /Array\.isArray\(node\.subLines\)/, 'the subtitle is not drawn');
+  // Who performs the step. Without it the panel shows the type but not the lane,
+  // and the two pictures disagree about what the card says.
+  assert.match(SOURCE, /LANE_LABEL\[node\.lane\]/, 'the lane is not drawn');
+  // The chapter bands. A panel that skips them draws one long ladder where the
+  // artifact draws ten named chapters — the same graph, read differently.
+  assert.match(SOURCE, /layout\.phaseRuns/, 'the phase bands are not drawn');
 });
 
 test('apply reports a registration failure instead of disappearing', () => {
