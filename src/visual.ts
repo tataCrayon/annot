@@ -49,10 +49,18 @@ export interface RenderReport {
   reason?: string;
 }
 
+/**
+ * The viewports every render is checked at.
+ *
+ * 1440 is the narrowest common laptop, 2048×1320 the widest studio display that
+ * archify also covers. Both ends matter: the graph is centred while it fits and
+ * left-anchored once it does not, so the two extremes are different layouts.
+ */
 export const VIEWPORTS: Array<[number, number]> = [
   [1440, 900],
   [1600, 1000],
   [1920, 1080],
+  [2048, 1320],
 ];
 
 /**

@@ -74,7 +74,7 @@ test('a skipped run is printed as skipped, not as success', () => {
 });
 
 test('the checked viewports are the documented set', () => {
-  assert.deepEqual(VIEWPORTS, [[1440, 900], [1600, 1000], [1920, 1080]]);
+  assert.deepEqual(VIEWPORTS, [[1440, 900], [1600, 1000], [1920, 1080], [2048, 1320]]);
 });
 
 test('a real render passes every viewport', { skip: browserless && 'no Chrome/Chromium/Edge on this machine' }, async () => {
