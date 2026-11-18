@@ -217,10 +217,17 @@ window.__ModuleLoader__.load({
             'aria-label': `${node.label}，${TYPE_LABEL[node.type] || node.type}，第 ${node.anchor.start} 到 ${node.anchor.end} 行`,
           });
 
+          // `h` reserves the fork row below the plate, so the visible card is
+          // `cardH`. The fallback keeps an older layout payload (no fork row)
+          // drawing the same rectangle it always did instead of a gap.
+          const cardH = typeof node.cardH === 'number' ? node.cardH : node.h;
+          const rows = Array.isArray(node.rows) ? node.rows : [];
+          const arms = Array.isArray(node.arms) ? node.arms : [];
+
           // The plate: host-background card, ink hairline, and a 3px top rule
           // carrying the type. Six pastel fills made every node look equally
           // urgent, which is the opposite of what a flow is for.
-          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: node.h, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
+          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: cardH, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
           group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: 3, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
 
           const typeWord = el('text', { x: 12, y: 17, 'font-size': 10.5, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` });
@@ -236,7 +243,16 @@ window.__ModuleLoader__.load({
             group.appendChild(text);
           });
 
-          const meta = el('text', { class: 'annot-mono', x: 12, y: node.h - 10, 'font-size': 10.5, fill: 'var(--dsw-alias-label-tertiary)' });
+          // A table's rows, so "八项必填" is the rule and not a title. The
+          // artifact draws these; the panel must draw the same card or the two
+          // pictures stop being one picture.
+          rows.forEach((row, index) => {
+            const text = el('text', { x: 12, y: 34 + lines.length * 19 + 4 + index * 15, 'font-size': 11, fill: 'var(--dsw-alias-label-secondary)' });
+            text.textContent = row;
+            group.appendChild(text);
+          });
+
+          const meta = el('text', { class: 'annot-mono', x: 12, y: cardH - 10, 'font-size': 10.5, fill: 'var(--dsw-alias-label-tertiary)' });
           meta.textContent = `L${node.anchor.start}-${node.anchor.end} · ${Math.round(node.confidence * 100)}%`;
           group.appendChild(meta);
 
@@ -251,7 +267,24 @@ window.__ModuleLoader__.load({
             group.appendChild(badge);
           }
           if (node.confidence < 0.6) {
-            group.appendChild(el('circle', { cx: node.w - 13, cy: node.h - 14, r: 3.2, fill: 'var(--dsw-alias-state-warn-primary)', 'data-role': 'low-confidence' }));
+            group.appendChild(el('circle', { cx: node.w - 13, cy: cardH - 14, r: 3.2, fill: 'var(--dsw-alias-state-warn-primary)', 'data-role': 'low-confidence' }));
+          }
+
+          // An unresolved fork, drawn as arms under the plate: the source says
+          // "hold / amend / replace" and none of the three lands anywhere, so
+          // the picture has to show three outcomes rather than a straight line.
+          if (arms.length) {
+            let armX = 6;
+            arms.forEach((arm) => {
+              group.appendChild(el('rect', { class: 'annot-arm', x: armX, y: cardH + 6, width: arm.w, height: 18, fill: 'var(--dsw-alias-bg-elevated)', stroke: 'var(--dsw-alias-state-warn-primary)', 'stroke-width': 1 }));
+              const label = el('text', { x: armX + arm.w / 2, y: cardH + 19, 'font-size': 11, 'text-anchor': 'middle', fill: 'var(--dsw-alias-state-warn-primary)' });
+              label.textContent = arm.label;
+              group.appendChild(label);
+              armX += arm.w + 8;
+            });
+            const note = el('text', { class: 'annot-mono', x: node.w - 12, y: cardH + 19, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--dsw-alias-state-warn-primary)' });
+            note.textContent = `未落地 ${arms.length}`;
+            group.appendChild(note);
           }
 
           const choose = () => onSelect(node.id);

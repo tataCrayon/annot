@@ -13,6 +13,7 @@
 
 import { defectsOf } from './audit.ts';
 import { depthOf } from './depth.ts';
+import { diagnose } from './diag.ts';
 import type { FlowDoc, FlowEdge, FlowNode, NodeType } from './types.ts';
 
 const NODE_W = 360;
@@ -319,6 +320,13 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   const toConfirm = doc.stats.lowConfidence;
   const steps = doc.nodes.length;
   const scored = scoreOf(doc);
+  const shape = diagnose(doc);
+  // A rendering can pass every viewport check and still not be a flow: three
+  // real skills drew one card per band, zero branch edges, and passed. The rail
+  // states the shape so a reader is not asked to infer it from the picture.
+  const shapeHtml = shape.findings.length
+    ? `<ul class="plain">${shape.findings.map((f) => `<li class="${f.severity === 'warn' ? 'warn' : ''}">${esc(f.message)}</li>`).join('')}</ul>`
+    : '<p class="muted" style="margin:0">没有形状上的异常：既有判定节点，也有横向铺开的分叉。</p>';
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -417,6 +425,9 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   .tag.ok { color: var(--artifact); border-color: var(--tag-ok-rule); }
 
   .muted { color: var(--muted); font-size: 12.5px; }
+  /* A shape finding that is a defect, not an observation. It marks the list item
+     only: the ink of the warning is reserved for things a reader must act on. */
+  ul.plain li.warn { color: var(--accent-2); }
   a { color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor; }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
@@ -482,6 +493,8 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
       <p class="why">${scored.verdict}</p>
       <p class="muted" style="margin:8px 0 0">这个数只反映抽取有没有明显缺陷（未落地分支、低置信、空正文、切得太碎），<strong>不评价 skill 本身写得好不好</strong>。与 <code>annot audit</code> 同一组权重：审计分 = 100 − 本分。</p>
       ${scored.reasons.length ? `<div class="why"><ul>${scored.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
+      <h2>形状</h2>
+      ${shapeHtml}
       <h2>怎么读</h2>
       <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。格子下方的橙色小条是<strong>没落地的分支臂</strong>：文件里写了这些结果，但抽取没能把它们接到任何一步。点开格子看它的行号与原文。</p>
       <h2>类型</h2>

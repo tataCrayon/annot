@@ -11,6 +11,7 @@ import { parseArgs } from 'node:util';
 
 import { auditRoots, formatAudit } from './audit.ts';
 import { buildEditContext, formatEditContext } from './context.ts';
+import { diagnose, formatDiagnosis } from './diag.ts';
 import { detectDrift } from './drift.ts';
 import { atomicWriteAll, atomicWrite } from './fsx.ts';
 import { MANIFEST_NAME, buildManifest, manifestContent, resolveSkillPath } from './manifest.ts';
@@ -389,14 +390,18 @@ function report(doc: FlowDoc): string {
   // the "unresolved branch" state, not "no branches".
   const forks = doc.nodes.reduce((total, node) => total + node.branches.length, 0);
   const bound = doc.edges.filter((e) => e.kind === 'branch').length;
+  const shape = diagnose(doc);
   const lines = [
     `annotated ${doc.skill}`,
     `  source      ${doc.source.file} (${doc.source.lines} lines, sha ${doc.source.sha.slice(0, 12)})`,
     `  nodes       ${doc.nodes.length}  edges ${doc.edges.length}  forks ${forks} (bound ${bound}, unresolved ${forks - bound})`,
     `  by type     stage ${s.byType.stage} · decision ${s.byType.decision} · gate ${s.byType.gate} · artifact ${s.byType.artifact} · external ${s.byType.external}`,
     `  to confirm  ${s.lowConfidence} node(s) below 60% confidence`,
+    // The layout can be perfectly drawn and still not be a flow. These lines are
+    // the only thing in the report that says so.
+    formatDiagnosis(shape).trimEnd(),
   ];
-  return `${lines.join('\n')}\n`;
+  return `${lines.filter(Boolean).join('\n')}\n`;
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));

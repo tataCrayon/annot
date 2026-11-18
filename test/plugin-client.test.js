@@ -154,6 +154,15 @@ test('the panel draws a low-confidence marker, not only the branch badge', () =>
   assert.match(SOURCE, /['"]data-role['"]:\s*['"]low-confidence['"]/);
 });
 
+test('the panel draws the same card the artifact draws', () => {
+  // The layout reserves `cardH` for the plate and `h` for the plate plus its
+  // fork row. A panel that treats `h` as the plate paints the arms on top of the
+  // card only in one of the two pictures, and they stop being one picture.
+  assert.match(SOURCE, /node\.cardH/, 'the panel ignores the plate height');
+  assert.match(SOURCE, /Array\.isArray\(node\.rows\)/, 'table rows are not drawn');
+  assert.match(SOURCE, /Array\.isArray\(node\.arms\)/, 'unresolved forks are not drawn');
+});
+
 test('apply reports a registration failure instead of disappearing', () => {
   // A panel that never appears is indistinguishable from a bundle that is not
   // installed. The console line is the only diagnosable evidence.

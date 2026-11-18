@@ -104,6 +104,24 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 
 顺带修掉：`drift` 在改写 `node.anchor` 之后才读 `from`，导致日志打印 `moved 65 → 65`。
 
+## 布局诊断：让"画出来了但不是流程"能被发现
+
+`verify` 只能证明页面渲染成功（不溢出、节点齐全、零网络），证明不了**画的是流程**。实测三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，而三视口检查全绿——没有任何断言会失败。
+
+`src/diag.ts` 补上这一层，输出五类发现（前两类是 `warn`，后三类是 `info`，都不阻断构建）：
+
+| code | 触发条件 | 实测触发 |
+|---|---|---|
+| `forks-not-drawn` | 声明了分支但 `branch` 边为 0 | grill-method：`文件里写了 3 个分支，一条都没连到目标` |
+| `single-column` | ≥8 节点、每条带只有一张卡、且无 decision | agent-dev-standards：`19 个节点排成 19 条单卡带` |
+| `stage-dominated` | ≥6 节点且 stage 占比 ≥80% | — |
+| `labels-truncated` | 标签以 `…` 结尾 | 两份都是 7 个 |
+| `over-split` | 每行切出 >1 个节点 | — |
+
+两处消费：`annot annotate` 的报告尾部（`!` 是 warn、`·` 是 info），以及产物右侧的「形状」栏。诊断读的是 `flow.json` 本身，不改任何产物字节。
+
+**面板与产物画同一张卡。** 之前面板把 `node.h` 当卡片高度、只画 `lines`，而产物在 `cardH` 处收边、下面还有分行和分支臂——同一份 `flow.json` 在两个 shell 里画出两张不同的图。现在面板消费同一份 `cardH` / `rows` / `arms`，`test/plugin-client.test.js` 加一条断言钉住这三样。
+
 ## 已知的洞（按严重度）
 
 | # | 洞 | 影响 | 下一步 |
