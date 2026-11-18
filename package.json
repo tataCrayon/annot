@@ -30,6 +30,7 @@
     "tools",
     "test/fixtures",
     "README.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "keywords": [
