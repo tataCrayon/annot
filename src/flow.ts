@@ -316,11 +316,15 @@ function extractBranches(unit: Unit, type: NodeType): Branch[] {
   // Only a decision (or a gate, which also forks) actually branches on an ✅/❌
   // bullet. In an ordinary stage those bullets are content, and treating them
   // as edges is how a graph grows fake unreachable nodes.
-  const armsCount = type === 'decision' || type === 'gate';
+  //
+  // The same restriction applies to conditional prose. `如果文件不存在，则向用户
+  // 询问路径` inside a step describes how that step behaves; it does not fork the
+  // graph. Only the step that *is* the decision can be forked by it.
+  const forks = type === 'decision' || type === 'gate';
 
   const out: Branch[] = [];
   for (const line of unit.lines) {
-    const cond = INLINE_ELSE.exec(line.text);
+    const cond = forks ? INLINE_ELSE.exec(line.text) : null;
     if (cond) {
       // `如果 X，则 A；否则 B` is two outcomes written as one sentence. Reading
       // it as a single branch loses the else-arm, which is the half people
@@ -331,8 +335,8 @@ function extractBranches(unit: Unit, type: NodeType): Branch[] {
       }
       continue;
     }
-    const isArm = armsCount && BRANCH_ARM.test(line.text);
-    const isCond = BRANCH_COND.test(line.text);
+    const isArm = forks && BRANCH_ARM.test(line.text);
+    const isCond = forks && BRANCH_COND.test(line.text);
     if (isArm || isCond) {
       const when = readable(line.text.replace(BRANCH_ARM, '').replace(BRANCH_COND, ''));
       if (when.length >= 2) out.push({ when: truncate(when, 80) });
@@ -340,8 +344,15 @@ function extractBranches(unit: Unit, type: NodeType): Branch[] {
     }
     for (const arm of slashArms(line.text)) out.push({ when: arm });
   }
-  return out;
+  // `禁止…` is a rule, not an outcome. A gate whose bullets are all prohibitions
+  // is stating what must never happen, and drawing each one as a fork produces
+  // eighteen edges that can never land — which is exactly the noise that made
+  // the unresolved-branch count useless.
+  return out.filter((b) => !RULE_TEXT.test(b.when));
 }
+
+/** Prohibitions and constraints: the author is forbidding, not forking. */
+const RULE_TEXT = /^\s*(?:禁止|不得|严禁|绝不|不允许|不要|勿|never|must not|do not|refuse to)/i;
 
 /**
  * `VERDICT — 逐项判决：守住 / 改良 / 替换` names its own outcomes inline.

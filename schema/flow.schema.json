@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/annot/annot/flow.schema.json",
+  "title": "annot flow document",
+  "description": "One skill's graph, as `annot annotate` writes it. This is the artifact every other command reads: `check` compares its anchors, `render` draws it, `context` slices it for an edit. A version field comes first because a reader that guesses the shape is a reader that silently misreads an old file.",
+  "type": "object",
+  "required": ["schema_version", "skill", "source", "nodes", "edges", "sections", "stats"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Bumped only for a breaking change to a field another command reads."
+    },
+    "skill": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "source": {
+      "type": "object",
+      "required": ["file", "sha", "lines", "generated_at"],
+      "additionalProperties": true,
+      "properties": {
+        "file": { "type": "string", "minLength": 1, "description": "Path as the caller named it; relative when the caller was." },
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the whole SKILL.md. A change here means every anchor below may be meaningless." },
+        "lines": { "type": "integer", "minimum": 1 },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "level", "start"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string", "pattern": "^s\\d+$" },
+          "title": { "type": "string" },
+          "level": { "type": "integer", "minimum": 1, "maximum": 6 },
+          "start": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "required": ["byType", "lowConfidence", "stale", "maxDepth"],
+      "additionalProperties": true,
+      "properties": {
+        "byType": {
+          "type": "object",
+          "required": ["stage", "decision", "gate", "artifact", "external"],
+          "additionalProperties": true,
+          "properties": {
+            "stage": { "type": "integer", "minimum": 0 },
+            "decision": { "type": "integer", "minimum": 0 },
+            "gate": { "type": "integer", "minimum": 0 },
+            "artifact": { "type": "integer", "minimum": 0 },
+            "external": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "lowConfidence": { "type": "integer", "minimum": 0 },
+        "stale": { "type": "integer", "minimum": 0 },
+        "maxDepth": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "description": "A contiguous 1-based inclusive line range plus the hash of exactly those lines. The hash is the only staleness judge: a range that moved but whose bytes are identical is still current.",
+      "required": ["heading", "start", "end", "sha"],
+      "additionalProperties": true,
+      "properties": {
+        "heading": { "type": "array", "items": { "type": "string" }, "description": "Enclosing headings, outermost first." },
+        "start": { "type": "integer", "minimum": 1 },
+        "end": { "type": "integer", "minimum": 1 },
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the exact lines in the range, joined with a newline. A range that moved but whose bytes are identical is current; a range whose bytes changed is stale, even at the same line numbers."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "label", "text", "raw", "anchor", "branches", "confidence", "flags"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique within the document; a slug of the label, suffixed on collision. Never reassigned by an edit." },
+        "type": {
+          "enum": ["stage", "decision", "gate", "artifact", "external"],
+          "description": "stage = a step, decision = a fork, gate = a rule that can stop the flow, artifact = an output shape, external = a call out of the skill."
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "description": "Readable body for the UI, newlines collapsed, truncated." },
+        "raw": { "type": "string", "description": "The exact source lines. An edit is only safe against this, not against `text`." },
+        "anchor": { "$ref": "#/$defs/anchor" },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["when"],
+            "additionalProperties": true,
+            "properties": {
+              "when": { "type": "string", "minLength": 1, "description": "The guard, as the author wrote it." },
+              "to": { "type": "string", "minLength": 1, "description": "Target node id, when one could be named. Absent means unresolved, which the node flags." }
+            }
+          }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": { "enum": ["extractor", "sidecar"] },
+        "flags": {
+          "type": "array",
+          "items": { "enum": ["low-confidence", "unresolved-branch", "stale", "relocated", "broken", "dropped-by-sidecar"] }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "when": { "type": "string", "description": "The guard, for a branch edge." },
+        "kind": { "enum": ["sequence", "branch"] }
+      }
+    }
+  }
+}
