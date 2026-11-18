@@ -11,6 +11,8 @@
  * skill still produce the same picture, so screenshots stay comparable.
  */
 
+import { defectsOf } from './audit.ts';
+import { depthOf } from './depth.ts';
 import type { FlowDoc, FlowEdge, FlowNode, NodeType } from './types.ts';
 
 const NODE_W = 360;
@@ -20,6 +22,10 @@ const LINE_H = 19;
 const PAD_TOP = 34;
 /** Footer that carries the line range and the confidence. */
 const FOOT_H = 26;
+/** One visible table row inside a card. */
+const ROW_H = 15;
+/** Room for the open arms drawn under a forking card. */
+const ARM_H = 26;
 const SIBLING_GAP = 28;
 const BAND_GAP = 34;
 const PAD = 40;
@@ -37,12 +43,18 @@ interface Placed extends FlowNode {
   y: number;
   w: number;
   h: number;
+  /** The plate itself; `h` also reserves any fork row hanging under it. */
+  cardH: number;
   /** Depth band: 0 is the entry, each sequence edge advances one. */
   band: number;
   /** Position inside the band, left to right. */
   slot: number;
   /** The label already broken into lines, so layout and paint cannot disagree. */
   lines: string[];
+  /** Table rows the card keeps visible, so a table is not just its header. */
+  rows: string[];
+  /** Guards whose target is unknown: drawn as open arms under the card. */
+  arms: Array<{ label: string; w: number }>;
 }
 
 interface PlacedEdge {
@@ -63,6 +75,23 @@ export interface Layout {
   edges: PlacedEdge[];
   /** One entry per depth band, for the numbered rules the page draws. */
   bands: Array<{ index: number; y: number; count: number }>;
+}
+
+/**
+ * Width of a string at a given size, in the same estimate `wrapLabel` uses.
+ *
+ * One function, because layout and paint have to agree: the earlier code
+ * measured in the browser and wrapped on the server, and the two disagreed by
+ * enough to cut a label mid-phrase.
+ */
+export function textWidth(text: string, fontPx = 13): number {
+  let width = 0;
+  for (const char of String(text)) {
+    const code = char.codePointAt(0) ?? 0;
+    const wide = (code >= 0x2e80 && code <= 0x9fff) || (code >= 0xff00 && code <= 0xffef);
+    width += wide ? fontPx : fontPx * 0.56;
+  }
+  return width;
 }
 
 /**
@@ -101,38 +130,81 @@ export function wrapLabel(text: string, maxPx: number, maxLines = 3, fontPx = 13
   return lines.length > 0 ? lines : [''];
 }
 
+/** Clip a string to a pixel budget, appending an ellipsis when it does not fit. */
+function clipToWidth(text: string, maxPx: number, fontPx = 11): string {
+  if (textWidth(text, fontPx) <= maxPx) return text;
+  let out = '';
+  for (const char of text) {
+    if (textWidth(`${out}${char}…`, fontPx) > maxPx) break;
+    out += char;
+  }
+  return `${out}…`;
+}
+
+/**
+ * A markdown table, recognised from its own text.
+ *
+ * `kindOf` in parse.ts takes `RawLine[]`, and a node only carries the joined
+ * string, so it cannot be reused here. The test is the separator row: a header
+ * line followed by `|---|---|` is a table and nothing else is.
+ */
+function isTable(raw: string): boolean {
+  const rows = raw.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+  if (rows.length < 2) return false;
+  return /^\|?[\s:|-]+\|?$/.test(rows[1] ?? '');
+}
+
+/**
+ * Turn a table node's raw markdown into rows a card can actually show.
+ *
+ * A table is where a skill states its gates and its field list, and flattening
+ * it to the header row hid the only part that carries the rule: "八项必填" was
+ * one card reading "# · 字段 · 不通过的样子" with all eight requirements inside
+ * a tooltip nobody opens. Rows are kept, capped, and the remainder is counted.
+ */
+function tableRows(raw: string, max = 6): string[] {
+  const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+  const data = lines.filter((l) => !/^\|?[\s:|-]+\|?$/.test(l));
+  const out: string[] = [];
+  for (const line of data.slice(1, max + 1)) {
+    const cells = line.split('|').slice(1, -1).map((c) => c.trim().replace(/[*`]/g, ''));
+    if (cells.length === 0) continue;
+    const first = cells[0] ?? '';
+    const rest = cells.slice(1).filter(Boolean).join(' · ');
+    const label = rest ? `${first}  ${rest}` : first;
+    if (label.trim() !== '') out.push(clipToWidth(label, NODE_W - 40, 11));
+  }
+  const hidden = Math.max(0, data.length - 1 - out.length);
+  if (hidden > 0) out.push(`…还有 ${hidden} 行`);
+  return out;
+}
+
+/**
+ * Lay out the open arms of a fork inside the card width.
+ *
+ * Arms are the guards whose target could not be resolved. Drawing them is the
+ * difference between "this skill has three outcomes" and a picture that looks
+ * like a straight line while the source clearly forks.
+ */
+function layoutArms(guards: string[]): Array<{ label: string; w: number }> {
+  const kept = guards.slice(0, 4);
+  if (kept.length === 0) return [];
+  const gap = 8;
+  const box = (NODE_W - gap * (kept.length - 1)) / kept.length;
+  return kept.map((guard) => {
+    const label = clipToWidth(guard, box - 20, 11);
+    return { label, w: Math.max(28, Math.min(box, textWidth(label, 11) + 20)) };
+  });
+}
+
 /**
  * Depth of every node from its longest sequence path.
  *
  * Longest path, not shortest: a node should sit below everything that can reach
- * it, otherwise two edges into the same band cross the card. The relaxation is
- * capped at `nodes.length` passes, so a cycle in the source degrades to a
- * stable picture instead of hanging the renderer.
+ * it, otherwise two edges into the same band cross the card.
  */
-function depthOf(nodes: FlowNode[], edges: FlowEdge[]): Map<string, number> {
-  const preds = new Map<string, string[]>();
-  for (const node of nodes) preds.set(node.id, []);
-  for (const edge of edges) {
-    if (edge.kind !== 'sequence') continue;
-    if (!preds.has(edge.to) || !preds.has(edge.from)) continue;
-    preds.get(edge.to)?.push(edge.from);
-  }
-
-  const depth = new Map<string, number>(nodes.map((n) => [n.id, 0]));
-  for (let pass = 0; pass < nodes.length; pass++) {
-    let moved = false;
-    for (const node of nodes) {
-      for (const pred of preds.get(node.id) ?? []) {
-        const candidate = (depth.get(pred) ?? 0) + 1;
-        if (candidate > (depth.get(node.id) ?? 0) && candidate < nodes.length) {
-          depth.set(node.id, candidate);
-          moved = true;
-        }
-      }
-    }
-    if (!moved) break;
-  }
-  return depth;
+function depthOfDoc(doc: FlowDoc): Map<string, number> {
+  return depthOf(doc.nodes, doc.edges);
 }
 
 /**
@@ -145,7 +217,7 @@ function depthOf(nodes: FlowNode[], edges: FlowEdge[]): Map<string, number> {
  * node below the one it follows, which is the only order a flow can be read in.
  */
 export function layoutNodes(doc: FlowDoc): Layout {
-  const depth = depthOf(doc.nodes, doc.edges);
+  const depth = depthOfDoc(doc);
 
   const bands = new Map<number, FlowNode[]>();
   for (const node of doc.nodes) {
@@ -167,7 +239,12 @@ export function layoutNodes(doc: FlowDoc): Layout {
     const members = [...(bands.get(band) ?? [])].sort((a, b) => a.anchor.start - b.anchor.start);
     const geometries = members.map((node) => {
       const lines = wrapLabel(node.label, NODE_W - 28);
-      return { node, lines, h: PAD_TOP + lines.length * LINE_H + FOOT_H };
+      // A table is a rule, not a title: show its rows so the card carries the
+      // requirement instead of hiding it behind the header.
+      const rows = isTable(node.raw) ? tableRows(node.raw) : [];
+      const arms = layoutArms(node.branches.filter((b) => !b.to).map((b) => b.when));
+      const cardH = PAD_TOP + lines.length * LINE_H + rows.length * ROW_H + FOOT_H;
+      return { node, lines, rows, arms, cardH, h: cardH + (arms.length ? ARM_H : 0) };
     });
     const bandH = Math.max(...geometries.map((g) => g.h));
     const left = PAD + GUTTER + (widest - bandWidth(members.length)) / 2;
@@ -177,6 +254,9 @@ export function layoutNodes(doc: FlowDoc): Layout {
       placed.push({
         ...geometry.node,
         lines: geometry.lines,
+        rows: geometry.rows,
+        arms: geometry.arms,
+        cardH: geometry.cardH,
         band,
         slot,
         x: left + slot * (NODE_W + SIBLING_GAP),
@@ -340,6 +420,11 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   a { color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor; }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
+  /* An open arm is a fork with no target; it keeps the ink of a warning rather
+     than a colour of its own, because the type ink is already spoken for. */
+  rect.arm { transition: none; }
+  .node:hover rect.arm, .node.sel rect.arm { stroke-width: 2; }
+
   /* A node is a control: it has hover, focus, press and selected. Press is the
      one state a screenshot never catches, which is why it is written down. */
   .node { cursor: pointer; }
@@ -393,11 +478,12 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
     <div id="canvas"></div>
     <aside id="detail">
       <h2>评估</h2>
-      <div class="score"><b>${scored.total}</b><span>/ 100 结构分</span></div>
+      <div class="score"><b>${scored.total}</b><span>/ 100 抽取可读度</span></div>
       <p class="why">${scored.verdict}</p>
+      <p class="muted" style="margin:8px 0 0">这个数只反映抽取有没有明显缺陷（未落地分支、低置信、空正文、切得太碎），<strong>不评价 skill 本身写得好不好</strong>。与 <code>annot audit</code> 同一组权重：审计分 = 100 − 本分。</p>
       ${scored.reasons.length ? `<div class="why"><ul>${scored.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
       <h2>怎么读</h2>
-      <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。格子右上角的数字是未落地的分支数，点开格子看它的行号与原文。</p>
+      <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。格子下方的橙色小条是<strong>没落地的分支臂</strong>：文件里写了这些结果，但抽取没能把它们接到任何一步。点开格子看它的行号与原文。</p>
       <h2>类型</h2>
       <div class="legend">${legend()}</div>
       <h2>待人工确认</h2>
@@ -416,53 +502,49 @@ ${CLIENT_JS}
 }
 
 /**
- * A score computed from what the extractor actually knows, never from a model's
- * impression. It answers one question: is this graph safe to read as the skill's
- * procedure, or does it still contain boxes a human has to check first?
+ * The rail's reading of the same defects `audit` reports.
  *
- * The weights are stated so a bad score can be argued with rather than felt:
- * an unlanded branch costs more than a hedge, because a branch that goes
- * nowhere hides a real fork in the source.
+ * There used to be two independent scoring functions: `audit` said higher is
+ * worse (0 = nothing visibly broken), the artifact said higher is better
+ * (100 = readable), and each had its own weights, so the same picture got two
+ * numbers that could not be compared. There is now one defect vector; the rail
+ * score is exactly `100 - audit score`, and the deduction list is written with
+ * the same weights so the bullets add up to the number above them.
+ *
+ * It measures extraction hygiene, not whether the skill is well written.
  */
-function scoreOf(doc: FlowDoc): { total: number; verdict: string; reasons: string[] } {
-  const steps = doc.nodes.length;
-  const unresolved = doc.nodes.reduce((n, node) => n + node.branches.filter((b) => !b.to).length, 0);
-  const low = doc.stats.lowConfidence;
-  const empty = doc.nodes.filter((n) => n.text.trim().length === 0).length;
-  const junk = doc.nodes.filter((n) => /^[|\-:—–\s]*$/.test(n.label)).length;
+export function scoreOf(doc: FlowDoc): { total: number; verdict: string; reasons: string[] } {
+  if (doc.nodes.length === 0) {
+    return { total: 0, verdict: '没有抽到任何步骤，先看文件是不是空的。', reasons: ['0 个步骤'] };
+  }
 
+  const defects = defectsOf(doc, doc.source?.lines ?? 0);
   const reasons: string[] = [];
-  let total = 100;
-  if (unresolved > 0) {
-    const cost = Math.min(36, unresolved * 6);
-    total -= cost;
-    reasons.push(`${unresolved} 个分支没有落到任何一步，${cost} 分`);
+  if (defects.junkLabels > 0) {
+    reasons.push(`${defects.junkLabels} 个步骤的标题是标点，切分点落在分隔线上，−${defects.junkLabels * 10}`);
   }
-  if (low > 0) {
-    const cost = Math.min(24, low * 4);
-    total -= cost;
-    reasons.push(`${low} 个步骤的分类置信度低于 60%，${cost} 分`);
+  if (defects.emptyText > 0) {
+    reasons.push(`${defects.emptyText} 个步骤没有正文，多半是表格或代码块被切开了，−${defects.emptyText * 5}`);
   }
-  if (empty > 0) {
-    total -= Math.min(20, empty * 10);
-    reasons.push(`${empty} 个步骤没有正文，多半是表格或代码块被切开了`);
+  if (defects.unresolvedBranches > 0) {
+    reasons.push(`${defects.unresolvedBranches} 个分支没有落到任何一步，−${defects.unresolvedBranches * 2}`);
   }
-  if (junk > 0) {
-    total -= Math.min(20, junk * 10);
-    reasons.push(`${junk} 个步骤的标题是标点，说明切分点落在分隔线上`);
+  if (defects.lowConfidence > 0) {
+    reasons.push(`${defects.lowConfidence} 个步骤的分类置信度低于 60%，−${defects.lowConfidence}`);
   }
-  if (steps === 0) {
-    total = 0;
-    reasons.push('没有抽到任何步骤');
+  const densityCost = Math.round(Math.max(0, defects.density - 0.5) * 20);
+  if (densityCost > 0) {
+    reasons.push(`每行切出 ${defects.density.toFixed(2)} 个节点，切得太碎，−${densityCost}`);
   }
 
+  const score = Math.max(0, 100 - Math.round(defects.score));
   const verdict =
-    total >= 90 ? '可以直接照着读。'
-    : total >= 70 ? '大体可读，个别格子在待确认清单里。'
-    : total >= 45 ? '能看出骨架，但有几处需要人工校正后再用。'
+    score >= 90 ? '抽取没有明显缺陷，可以照着读。'
+    : score >= 70 ? '大体可读，个别格子在右侧待确认清单里。'
+    : score >= 45 ? '能看出骨架，但有几处需要人工校正。'
     : '这张图还不该被当成流程来读，先修抽取。';
 
-  return { total: Math.max(0, Math.round(total)), verdict, reasons };
+  return { total: score, verdict, reasons };
 }
 
 function legend(): string {
@@ -556,11 +638,12 @@ for (const e of layout.edges) {
 
 for (const n of layout.nodes) {
   const tint = 'fill: var(' + (TYPE_VAR[n.type] || '--stage') + ')';
+  const cardH = n.cardH || n.h;
   const g = svgEl('g', { class:'node', 'data-id': n.id, transform: 'translate(' + n.x + ',' + n.y + ')' });
 
   // The plate: paper-white card, 1px ink rule, and a 3px rule on the top edge
   // carrying the node's type. Fill is not the signal — the type is.
-  g.appendChild(svgEl('rect', { class:'card', width:n.w, height:n.h, fill:'var(--plate)', stroke:'var(--rule-ink)', 'stroke-width':1 }));
+  g.appendChild(svgEl('rect', { class:'card', width:n.w, height:cardH, fill:'var(--plate)', stroke:'var(--rule-ink)', 'stroke-width':1 }));
   g.appendChild(svgEl('rect', { width:n.w, height:3, style: tint }));
 
   g.appendChild(svgText(12, 17, LABEL[n.type], { 'font-size':10.5, 'letter-spacing':'.02em', style: tint }));
@@ -569,8 +652,15 @@ for (const n of layout.nodes) {
     g.appendChild(svgText(12, 34 + i * 19, line, { 'font-size':13, style: 'fill: var(--rule-ink)' }));
   });
 
+  // A table's rows sit under its header. Without them the card is a title with
+  // the rule inside a tooltip, which is how "八项必填" became invisible.
+  const rowTop = 34 + (n.lines || []).length * 19 + 4;
+  (n.rows || []).forEach(function (row, i) {
+    g.appendChild(svgText(12, rowTop + i * 15, row, { 'font-size':11, style: 'fill: var(--ink-2)' }));
+  });
+
   const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%';
-  g.appendChild(svgText(12, n.h - 10, foot, { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
+  g.appendChild(svgText(12, cardH - 10, foot, { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
 
   const openBranches = n.branches.filter(function (b) { return !b.to; }).length;
   if (openBranches) {
@@ -579,7 +669,20 @@ for (const n of layout.nodes) {
     }));
   }
   if (n.confidence < 0.6) {
-    g.appendChild(svgEl('circle', { cx: n.w - 13, cy: n.h - 14, r: 3.2, 'data-role': 'low-confidence', style: 'fill: var(--accent)' }));
+    g.appendChild(svgEl('circle', { cx: n.w - 13, cy: cardH - 14, r: 3.2, 'data-role': 'low-confidence', style: 'fill: var(--accent)' }));
+  }
+
+  // An open arm is a fork whose target the extractor could not name. It stays
+  // attached to the card and is marked with a dashed stub, so "this step has
+  // three outcomes" is visible even when none of the three lands anywhere.
+  let armX = 6;
+  (n.arms || []).forEach(function (arm) {
+    g.appendChild(svgEl('rect', { class:'arm', x:armX, y:cardH + 6, width:arm.w, height:18, fill:'var(--accent-soft)', stroke:'var(--accent)', 'stroke-width':1 }));
+    g.appendChild(svgText(armX + arm.w / 2, cardH + 19, arm.label, { 'font-size':11, 'text-anchor':'middle', style: 'fill: var(--accent-2)' }));
+    armX += arm.w + 8;
+  });
+  if ((n.arms || []).length) {
+    g.appendChild(svgText(n.w - 12, cardH + 19, '未落地 ' + n.arms.length, { 'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--accent); font-family: var(--font-mono)' }));
   }
 
   g.addEventListener('click', function () { select(n, g); });

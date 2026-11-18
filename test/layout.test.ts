@@ -104,3 +104,38 @@ test('an empty document still produces a usable canvas', () => {
   assert.equal(layout.nodes.length, 0);
   assert.ok(layout.width > 0 && layout.height > 0, 'a zero-size canvas is a blank page');
 });
+
+test('an unresolved fork draws its arms inside the card width', () => {
+  const { layout } = layoutOf('grill-method.md', 'grill-method.md');
+  const forked = layout.nodes.filter((n) => n.arms.length > 0);
+  // grill-method's VERDICT step forks 守住 / 改良 / 替换 and none of the three
+  // lands anywhere. Before this, the card looked like any other step and the
+  // fork existed only as a number in its corner.
+  assert.ok(forked.length > 0, 'no card drew its unresolved fork');
+  for (const node of forked) {
+    const span = node.arms.reduce((sum, arm) => sum + arm.w, 0) + (node.arms.length - 1) * 8;
+    assert.ok(span <= node.w, `${node.id}: arms span ${span}px in a ${node.w}px card`);
+    // The plate stops where the arms begin, so an arm can never be painted on
+    // top of the footer.
+    assert.ok(node.h > node.cardH, `${node.id}: h=${node.h} leaves no room for cardH=${node.cardH}`);
+    for (const arm of node.arms) assert.ok(arm.label.length > 0, `${node.id} has a blank arm`);
+  }
+});
+
+test('a table card keeps its rows instead of only its header', () => {
+  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+  const byId = new Map(layout.nodes.map((n) => [n.id, n]));
+  for (const node of doc.nodes) {
+    const placed = byId.get(node.id);
+    assert.ok(placed);
+    const isTable = /^\|[\s:|-]+\|?$/m.test(node.raw.split('\n')[1] ?? '');
+    if (!isTable) {
+      assert.deepEqual(placed.rows, [], `${node.id} is not a table but grew rows`);
+      continue;
+    }
+    // A table is where a skill states its rule; flattening it to the header row
+    // hid the whole "八项必填" checklist behind a title.
+    assert.ok(placed.rows.length > 0, `${node.id} is a table with no visible rows`);
+    for (const row of placed.rows) assert.ok(row.length > 0, `${node.id} has a blank row`);
+  }
+});

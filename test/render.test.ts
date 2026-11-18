@@ -128,7 +128,9 @@ test('a node group is emitted for every graph node', async () => {
     const placed = sized.get(group.attrs['data-id']);
     assert.ok(placed, `${group.attrs['data-id']} is not in the layout`);
     assert.equal(card.attrs.width, String(placed.w));
-    assert.equal(card.attrs.height, String(placed.h));
+    // `h` reserves the fork row as well, so the plate is `cardH` and the group
+    // is taller only when an open arm hangs under it.
+    assert.equal(card.attrs.height, String(placed.cardH));
     // Height grows with the number of label lines, so a fixed height would
     // clip the third line of a long label.
     assert.ok(Number(card.attrs.height) > 62, `card height ${card.attrs.height} cannot hold two label lines`);

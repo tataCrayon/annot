@@ -89,6 +89,14 @@ const PROBE = `(() => {
       const tb = t.getBBox();
       if (tb.width > cardWidth - 4) { overflowed.push(id); break; }
     }
+
+    // The card rect is the plate, but a fork row hangs below it. A page where
+    // those arms spill past the reported height loses the last steps silently,
+    // so the whole group is measured against the canvas, not just the plate.
+    if (bounds) {
+      const arms = g.querySelector('rect.arm');
+      if (arms && rendered.bottom > bounds.bottom + 1) outside.push(id);
+    }
   }
 
   const duplicated = [];

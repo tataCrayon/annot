@@ -36,7 +36,26 @@ export interface SkillAudit {
 
 const JUNK = /^[|\-:—–\s]*$/;
 
-export function auditFlow(doc: FlowDoc, lines: number): Omit<SkillAudit, 'skill' | 'file'> {
+/**
+ * The one place the defect weights live.
+ *
+ * Two caller-facing numbers used to be computed from two different sets of
+ * constants: `audit` said higher-is-worse, the artifact's rail said
+ * higher-is-better, and neither could be argued with because they disagreed.
+ * Both now read this, so a weight can be changed once and both answers move.
+ */
+export interface Defects {
+  lowConfidence: number;
+  unresolvedBranches: number;
+  emptyText: number;
+  junkLabels: number;
+  /** Nodes per source line: values far above 0.5 mean the file was over-split. */
+  density: number;
+  /** Higher is worse. Zero means "nothing the extractor did is visibly broken". */
+  score: number;
+}
+
+export function defectsOf(doc: FlowDoc, lines: number): Defects {
   const lowConfidence = doc.nodes.filter((n) => n.flags.includes('low-confidence')).length;
   const unresolvedBranches = doc.nodes.reduce((sum, n) => sum + n.branches.filter((b) => !b.to).length, 0);
   const emptyText = doc.nodes.filter((n) => n.text.trim().length === 0).length;
@@ -52,15 +71,15 @@ export function auditFlow(doc: FlowDoc, lines: number): Omit<SkillAudit, 'skill'
     lowConfidence +
     Math.max(0, density - 0.5) * 20;
 
+  return { lowConfidence, unresolvedBranches, emptyText, junkLabels, density, score };
+}
+
+export function auditFlow(doc: FlowDoc, lines: number): Omit<SkillAudit, 'skill' | 'file'> {
+  const defects = defectsOf(doc, lines);
   return {
     nodes: doc.nodes.length,
     edges: doc.edges.length,
-    lowConfidence,
-    unresolvedBranches,
-    emptyText,
-    junkLabels,
-    density,
-    score,
+    ...defects,
     byType: countByType(doc),
     sample: doc.nodes.slice(0, 3).map((n) => n.label.slice(0, 40)),
   };

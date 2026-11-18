@@ -4,6 +4,7 @@
  * the sidecar; annot never learns from the override, it only obeys it.
  */
 
+import { maxDepthOf } from './depth.ts';
 import { kindOf, linesSha, readable, type ParsedSkill, type RawLine, type Unit } from './parse.ts';
 import type {
   Branch,
@@ -164,7 +165,7 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
 
   const edges = linkEdges(nodes);
   applyBranchTargets(nodes, edges);
-  const stats = computeStats(nodes);
+  const stats = computeStats(nodes, edges);
 
   return {
     skill: skill.name,
@@ -461,14 +462,16 @@ function pushFlag(node: FlowNode, flag: NodeFlag): void {
   if (!node.flags.includes(flag)) node.flags.push(flag);
 }
 
-function computeStats(nodes: FlowNode[]): FlowDoc['stats'] {
+function computeStats(nodes: FlowNode[], edges: FlowEdge[]): FlowDoc['stats'] {
   const byType = { stage: 0, decision: 0, gate: 0, artifact: 0, external: 0 } as Record<NodeType, number>;
   for (const n of nodes) byType[n.type]++;
   return {
     byType,
     lowConfidence: nodes.filter((n) => n.flags.includes('low-confidence')).length,
     stale: nodes.filter((n) => n.flags.includes('stale')).length,
-    maxDepth: Math.max(0, ...nodes.map((n) => n.anchor.heading.length)),
+    // Flow depth, not heading depth. It used to be `anchor.heading.length`, so a
+    // 19-step pipeline reported 2 while the canvas drew 19 bands.
+    maxDepth: maxDepthOf(nodes, edges),
   };
 }
 
