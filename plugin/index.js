@@ -195,7 +195,8 @@ function readBody(req, limit = 64 * 1024) {
   });
 }
 
-function tryParse(text) {  if (text === '') return undefined;
+function tryParse(text) {
+  if (text === '') return undefined;
   try {
     return JSON.parse(text);
   } catch {
