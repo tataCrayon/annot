@@ -10,7 +10,7 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 121 个测试，全绿
+node --test test/*.test.ts test/*.test.js   # 122 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>
@@ -35,6 +35,8 @@ node src/cli.ts verify <flow.json> --shot <dir>
 | 面板链路 | `composed.registered: true`，rev `9b0a9bca464d` | `GET /api/annot/selfcheck` |
 | 面板是否被打开过 | 这一轮**还没有** `panel-mounted` | 同上，`reports` |
 
+**关于"面板到底有没有出现"：** 宿主侧的证据已经齐了——包被编进模块图、bundle 能按 rev 取到、`apply-enter` 与 `seat-available` 在页面重载时连续出现过三次。缺的只有 `panel-mounted`，它要求有人真的点开侧边栏那一行。自动化打不开那个页面：索引请求要走 Connection 的浏览器认证，而 token 只在 `dsh web` 启动时打印。`tools/probe-panel.ts` 会明确报出这一点（`page reports: none` + 401），而不是假装通过。
+
 ## 面板的可观测性（这是这一轮真正补上的东西）
 
 面板"没出现"有三种完全不同的原因，而在宿主侧它们长得一模一样。`GET /api/annot/selfcheck` 一次把它们分开：
@@ -47,7 +49,7 @@ node src/cli.ts verify <flow.json> --shot <dir>
 | 有 `registered` | 注册成功 |
 | 有 `panel-mounted` | **有人真的打开过这个面板**，链路全通 |
 
-除最后一行，其余三行都已被实测填过：`registered: true`、`apply-enter` 与 `seat-available` 曾连续出现三次（每次页面重载一次）。缺的只有 `panel-mounted`——它需要有人真的点开那一行。
+`reports` 里出现的三条已实测填过：`registered: true`、`apply-enter` 与 `seat-available` 在三次页面重载中各出现一次。合成上报（探针、终端里的 curl）带 `probe: true`，selfcheck 把它们单独计进 `probes`，绝不混进 `reports`——否则"有人真的看过面板"这个信号谁都能伪造。
 
 `composed` 直读宿主的 `clientModules` 服务，并给出确切的 bundle URL（形如 `plugins/??annot-dsh/client.js&rev=<hash>`，rev 由 client.js 的 mtime/ctime/size 算出）。
 
