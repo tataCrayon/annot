@@ -368,15 +368,14 @@ function makeRoutes(config, logger) {
       handler: async (req, res) => {
         if (!guard(req, res, 'GET')) return;
         // Whether the browser half actually reached the page is a fact only the
-        // page can report, and the person who can see the page is the user. This
-        // route is where that becomes checkable instead of guessed at.
-        //
-        // It answers three things the Host knows on its own:
+        // page can report. This route is where that becomes checkable instead of
+        // guessed at. It answers four things:
         //   - the declared client entry point, and whether that file exists;
         //   - whether `dsh.client.platform` is `web` (otherwise the composer
         //     never emits a graph row for this package at all);
-        //   - the URL shape the module system serves bundles under, so a stale
-        //     hand-written probe can be corrected rather than believed.
+        //   - whether the host's own module registry composed this package, with
+        //     the exact URL it would serve;
+        //   - what the page itself said, in arrival order.
         const meta = readClientMeta();
         writeJson(res, 200, {
           package: meta.name,
