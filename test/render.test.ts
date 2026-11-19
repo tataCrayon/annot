@@ -97,14 +97,38 @@ async function runClient(): Promise<{ svg: StubElement; panel: StubElement; layo
   nodes.set('detail', makeElement('aside'));
   nodes.set('panel', panel);
   nodes.set('todos', todos);
+  // The toolbar is part of the page the client expects. A stub DOM that omits it
+  // cannot tell "the script threw" from "the page has no toolbar", so every
+  // control the client binds has to exist here too.
+  for (const id of ['find', 'hits', 'trace', 'zoom-in', 'zoom-out', 'zoom-reset']) {
+    nodes.set(id, makeElement('div'));
+  }
 
   const document = {
     getElementById: (id: string) => nodes.get(id) ?? null,
     createElementNS: (_ns: string, tag: string) => (tag === 'svg' ? svg : makeElement(tag)),
     createElement: (tag: string) => makeElement(tag),
     querySelectorAll: () => [],
+    // The client binds keyboard shortcuts on the document; a stub without this
+    // throws before the first card is drawn, and the failure reads as "the
+    // renderer is broken" when it is the test that is incomplete.
+    addEventListener() {},
   };
-  const context = vm.createContext({ document, console, JSON, Math, String, Number, Object, Array, Set, Map });
+  const context = vm.createContext({
+    document,
+    console,
+    JSON,
+    Math,
+    String,
+    Number,
+    Object,
+    Array,
+    Set,
+    Map,
+    // Zoom reads the container size to keep the scroll position; a headless
+    // context has no layout, so the numbers only have to be numbers.
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+  });
   new vm.Script(client[1], { filename: 'annot-client.js' }).runInContext(context);
   return { svg, panel, layout: JSON.parse(layout[1]) as Layout };
 }

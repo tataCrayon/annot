@@ -35,41 +35,97 @@ test('layout is deterministic: two runs of the same document are identical', () 
   assert.deepEqual(layoutNodes(doc), layoutNodes(doc));
 });
 
-test('every step sits below the step it follows', () => {
+test('no connector points back up the page', () => {
   const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
   const byId = new Map(layout.nodes.map((n) => [n.id, n]));
+  let checked = 0;
 
   for (const edge of doc.edges) {
-    if (edge.kind !== 'sequence') continue;
     const from = byId.get(edge.from);
     const to = byId.get(edge.to);
     if (!from || !to) continue;
+    checked++;
     // The failure this pins down: in a column-major grid, node 8 of a 19-step
-    // pipeline sat above node 7, and the arrow pointed up. A flow read downward
-    // is the whole point of drawing it.
-    assert.ok(to.y > from.y, `${edge.to} (y=${to.y}) is not below ${edge.from} (y=${from.y})`);
-    assert.equal(to.band, from.band + 1, `${edge.to} is not exactly one band below ${edge.from}`);
+    // pipeline sat above node 7 and the arrow pointed up. In the column layout a
+    // step and its gate share a row, so "below" is not the rule any more — but
+    // "never upward" still is.
+    assert.ok(
+      to.y + to.h > from.y + 1,
+      `${edge.to} (y=${to.y}..${to.y + to.h}) ends above ${edge.from} (y=${from.y})`,
+    );
+  }
+  assert.ok(checked > 0, 'no edge was checked');
+});
+
+test('a step and the step after it are one row apart', () => {
+  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+  const byId = new Map(layout.nodes.map((n) => [n.id, n]));
+  const core = (id: string) => (byId.get(id)?.col ?? 'core') === 'core';
+  let coreToCore = 0;
+
+  for (const edge of doc.edges) {
+    if (edge.kind !== 'sequence') continue;
+    if (!core(edge.from) || !core(edge.to)) continue;
+    coreToCore++;
+    const from = byId.get(edge.from);
+    const to = byId.get(edge.to);
+    assert.ok(from && to);
+    // Side cards share a row with their step, so only the main path advances a
+    // row — and it advances exactly one, which is what keeps the trunk straight.
+    assert.equal(to.band, from.band + 1, `${edge.to} is not exactly one row below ${edge.from}`);
+  }
+  assert.ok(coreToCore > 5, `only ${coreToCore} core-to-core edges found`);
+});
+
+test('no two cards overlap anywhere on the canvas', () => {
+  const { layout } = layoutOf('grill-method.md', 'grill-method.md');
+  for (let i = 0; i < layout.nodes.length; i++) {
+    for (let j = i + 1; j < layout.nodes.length; j++) {
+      const a = layout.nodes[i];
+      const b = layout.nodes[j];
+      const apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+      assert.ok(apart, `${a.id} and ${b.id} overlap`);
+    }
   }
 });
 
-test('cards in the same band never overlap', () => {
-  const { layout } = layoutOf('grill-method.md', 'grill-method.md');
-  const bands = new Map<number, typeof layout.nodes>();
-  for (const node of layout.nodes) {
-    if (!bands.has(node.band)) bands.set(node.band, []);
-    bands.get(node.band)?.push(node);
+test('the three columns are drawn as columns, not as stacked rows', () => {
+  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+  // A gate that shares a row with its step is the whole point of the sketch: the
+  // picture says "this step is checked by that gate" instead of putting the gate
+  // between two steps it has nothing to do with.
+  const byId = new Map(layout.nodes.map((n) => [n.id, n]));
+  const side = doc.nodes.find((n) => n.type === 'gate' || n.type === 'external');
+  assert.ok(side, 'the fixture has no gate to test with');
+  const placed = byId.get(side.id);
+  assert.ok(placed);
+  assert.equal(placed.col, 'side');
+
+  const core = layout.nodes.filter((n) => n.col === 'core');
+  const gate = layout.nodes.filter((n) => n.col === 'side');
+  const artifacts = layout.nodes.filter((n) => n.col === 'artifact');
+  assert.ok(core.length > 0 && gate.length > 0);
+  // Each column has one x for every card in it: a column that walks left and
+  // right per band is unreadable even when every card is correct.
+  for (const column of [core, gate, artifacts]) {
+    if (column.length === 0) continue;
+    const xs = new Set(column.map((n) => n.x));
+    assert.equal(xs.size, 1, `column ${column[0].col} has ${xs.size} different x positions`);
   }
-  for (const [band, members] of bands) {
-    const sorted = [...members].sort((a, b) => a.x - b.x);
-    for (let i = 1; i < sorted.length; i++) {
-      const left = sorted[i - 1];
-      const right = sorted[i];
-      assert.ok(
-        right.x >= left.x + left.w,
-        `band ${band}: card at x=${right.x} starts before card ending at ${left.x + left.w}`,
-      );
-    }
-  }
+  // Left to right: core, then gates, then artifacts.
+  const coreRight = Math.max(...core.map((n) => n.x + n.w));
+  assert.ok(Math.min(...gate.map((n) => n.x)) > coreRight, 'the gate column is left of the main path');
+});
+
+test('a document with no side cards keeps a single column', () => {
+  // Three columns with two of them empty is a promise the document does not
+  // keep, so the layout falls back to one column rather than drawing empty rails.
+  const text = ['# 只有步骤', '', '1. 第一步', '2. 第二步', '3. 第三步'].join('\n');
+  const doc = buildFlow(parseSkill(text, { file: 'linear.md' }), text, { sourceFile: 'linear.md' });
+  assert.ok(doc.nodes.every((n) => n.type === 'stage'), 'the fixture is not all stages');
+  const layout = layoutNodes(doc);
+  assert.deepEqual(layout.columns, []);
+  assert.deepEqual(layout.columnHeaders, []);
 });
 
 test('every card stays inside the reported canvas', () => {

@@ -182,9 +182,11 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **审计权重** | audit-slim：五个自问 + 明确判定动词（叙述性提及保留 / 指挥性引用改） | 权重（×10 / ×5 / ×2 / ×1 / ×20）依然是**拍的常数，零校准数据**，但**只剩一份**：`src/audit.ts` 的 `defectsOf()` 是唯一来源，产物右侧的分数恒等于 `100 − 审计分`。此前两处各有一套权重、方向相反 | 🟡 **口径已统一，校准仍未做**。辩护仍是"只用来排序，不用来判定合格与否" |
 | **模型可读性** | 都有 `references/`、typed schema、示例 | `schema/flow.schema.json`（2020-12）已存在，`test/schema.test.js` 用真实写出的文档做 6 条契约断言 | ✅ **已补**（此前这条写的是"没有写成 JSON Schema"，已过期） |
 | **布局诊断** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt`） | `verify` 能证明"卡片没溢出画布"；`src/diag.ts` 补上"画的是不是流程"这一层，输出 5 类可判定的发现（`forks-not-drawn` / `single-column` / `stage-dominated` / `labels-truncated` / `over-split`），同时进 `annotate` 报告尾部与产物右侧的「形状」栏 | 🟡 **诊断已补，修复回路仍无**。archify 的 `via` / `channelX` / `labelAt` 是能改布局的旋钮，annot 只有一种布局：诊断说"19 个节点排成 19 条单卡带"，但没有参数可以改它 |
-| **结构分层** | archify 的 spec 自带 `col`（逻辑列秩）与 `phases[].fromCol/toCol`，还有 `lane` 与 `sublabel` | `layoutNodes()` 新增 `phaseRuns`（声明式阶段连成强带、罩住 ≥2 卡的最近标题连成弱带）、节点新增 `lane` 与 `subtitle`、画布宽度从固定的 528px 改成"用满图区" | 🟡 **借了"阶段是一等公民"与"卡片有第二行"两个判断，没借 `col`**：archify 让作者指定逻辑列，annot 仍然只能从顺序边推深度——这也是 `bands == nodes` 屡修不掉的根因 |
+| **结构分层** | archify 的 spec 自带 `col`（逻辑列秩）与 `phases[].fromCol/toCol`，还有 `lane` 与 `sublabel` | `layoutNodes()` 按节点类型派生三列（`core` / `side` / `artifact`）、新增 `columns` 与 `columnHeaders`（自带计数与一句解释）、`phaseRuns`（声明式阶段连成强带、罩住 ≥2 卡的最近标题连成弱带）、节点新增 `lane` 与 `subtitle` | ✅ **借了 `col` 这个判断，但推导方式不同**：archify 让作者在 spec 里显式指定列，annot 从 `NodeType` 派生（`stage/decision → 核心`、`gate/external → 门禁`、`artifact → 产物`），因为 annot 的输入是别人的 `SKILL.md`，作者没写过列号。实测 4 份真实 skill 的侧卡挂靠 **0 处倒挂**，所以按"源文件顺序上最近的核心步骤"分行是安全的；一条 `branch` 边出现时这个前提就失效，见 `docs/00` 洞 #1 |
+| **阅读时的动效** | archify 的 `meta.animation: "trace"`、`meta.views`（≤5 章）、展台模式、寻路，且原则是 **motion-governed：静态必须自身完整** | 悬停点亮**直接**上下游（传递闭包实测点亮 33/34，等于没点亮）、6 档缩放 + `Ctrl+滚轮`、按标签/id/行号查找、底栏实时写上下游 | 🟡 **借了"静态优先 + 读者控制"的原则，没借 `meta.views` 手选章节**：annot 的阶段带来自文档本身而不是人工策展，所以没有"故事线"这个独立数据；自动播放（`trace` 的 Live 模式）也没做，因为每次打开都在动会打断读图 |
+| **图列契约的可验证性** | archify `validate --quality showcase` 拒绝 <8px 的路线段与 <16px 的内部转角 | `verify` 在四个视口检查节点数 / 重复 / 溢出 / 出界 / 零网络；`test/layout.test.ts` 三条几何不变式（列真的是列、一步与下一步恰好相邻一行、任意两卡不重叠）；`sandbox/ui-check.mjs` 17 条真浏览器交互断言 | ✅ 两侧都靠"可判定的断言"而不是"看起来对"，但 archify 有像素级的美学约束，annot 只保证不出错 |
 
-**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平，结构分层也从 archify 借来了"阶段是一等公民"；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时，诊断会说话了但没人能改它**——三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，`verify` 三条视口全绿。`diag` 现在会把这件事报出来，但没有 `col` 那样的作者可控旋钮去修。
+**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平，结构分层也从 archify 借来了 `col` 这个判断（改成从节点类型派生）；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时，诊断会说话了但没人能改它**——三份真实 skill 全部 `branch` 边为 0，`verify` 四视口全绿。`diag` 现在会把 `widest == 1` 报出来，但仍然没有 `via` / `channelX` 那样能改布局的作者可控旋钮。
 
 ---
 
@@ -204,7 +206,7 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 
 四条的共同点：**都不是"多给一个视图"，而是"给一个能返回 0/1 的判断"**。
 
-**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`diag` 现在会把 `widest == 1` 报出来但改不掉它；要讲这句话，得先让 `branch` 边在真实数据里出现，再有 `col` 那样的作者可控旋钮。
+**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`diag` 现在会把 `widest == 1` 报出来但改不掉它；要讲这句话，得先让 `branch` 边在真实数据里出现。
 
 这也解释了为什么 M1 不做插件 UI：插件 UI 是"多一个视图"，而 UI 加不进"图还对不对"这个判断。判断必须住在 CLI 里，才能被 CI、被 hook、被另一个 agent 调用。
 

@@ -170,6 +170,11 @@ test('the panel draws the same card the artifact draws', () => {
   // The chapter bands. A panel that skips them draws one long ladder where the
   // artifact draws ten named chapters — the same graph, read differently.
   assert.match(SOURCE, /layout\.phaseRuns/, 'the phase bands are not drawn');
+  // The column headers and rails. The artifact says which lane is the main path
+  // and which two are its gates and artifacts; a panel that drops them draws
+  // three unrelated lists that happen to share a canvas.
+  assert.match(SOURCE, /layout\.columnHeaders/, 'the column headers are not drawn');
+  assert.match(SOURCE, /annot-column-note/, 'the column headers carry no explanation');
 });
 
 test('apply reports a registration failure instead of disappearing', () => {

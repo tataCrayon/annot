@@ -1,8 +1,8 @@
-# annot
+﻿# annot
 
 **给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，154 个测试 + 7 段沙箱验收全绿）
+> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，157 个测试 + 7 段沙箱验收全绿）
 
 ---
 
@@ -154,7 +154,7 @@ annot verify .annot/my-skill/my-skill.flow.json
 |---|---|
 | 每个视口的节点数 == `flow.json` 的节点数 | 脚本没执行时页面"看起来"正常，只是空的 |
 | 同一个节点没有画两遍 | 重复 id 在图上表现为两个框，肉眼很难数出来 |
-| 标签没有溢出卡片 | 360px 卡片 + 中文，溢出是常态 |
+| 标签没有溢出卡片 | 卡片最窄时会到 170px（三列布局的侧列），页脚一行就能撑破它 |
 | 卡片没有画到画布外 | 布局算错时边缘的框会消失 |
 | 文档没有横向滚动条 | 有横向滚动说明窗口尺寸被写死 |
 | 页面没有发起任何网络请求 | 单文件自包含的唯一硬证据 |
@@ -173,6 +173,22 @@ annot verify .annot/my-skill/my-skill.flow.json
 抓一张截图：`annot verify … --shot ./shots`，会按视口写出 `1440x900.png` 等四张。
 
 零依赖：直接用 Node 内置的 `WebSocket` 讲 CDP，不装 Puppeteer。浏览器路径自动探测，也可以用 `ANNOT_CHROME` 指定。
+
+## 图怎么读、怎么动
+
+左列是**你要按顺序做的事**，同一行的右两列是这一步**靠什么判断**（门禁 / 外部调用）和**交出什么**（产物）。一行的高度由这一行最高的卡决定，主路径因此是一根直的竖脊；表头自带计数，某一列在本文件里没有卡就写"本文件没有这一类"，不画空轨道。没有侧卡的文档退回单列——三列里两列空着是骗人的。
+
+实测 `release-checklist`：34 节点排成 26 行，`980 × 3711`（4.1 屏），列分配 `核心 25 / 门禁 6 / 产物 3`。
+
+三件事是**静态优先**的，动效只在读的时候帮一把：
+
+| 操作 | 效果 |
+|---|---|
+| 悬停一张卡 | 只点亮**直接**上下游，其余降到 28% 不透明度；底栏写"这一格从哪来、到哪去" |
+| `+` / `-` / `0`、`Ctrl+滚轮` | 6 档缩放（60%–200%），`Ctrl+滚轮`在指针处缩放并保持滚动位置；普通滚轮仍是翻页 |
+| `/` 或点输入框 | 按标签 / id / 行号 / 阶段名查，Enter 逐个跳 |
+
+**只点亮直接邻居，不点亮整条链**：实测按传递闭包做，第 1 行能点亮 33/34 张卡，等于没点亮。这条判定写在 `src/render.ts` 的 `trace()` 注释里，`sandbox/ui-check.mjs` 用真浏览器断言 `hot 2 / dim 32`。
 
 ---
 
@@ -270,7 +286,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 154 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 157 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

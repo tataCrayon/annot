@@ -123,6 +123,8 @@ window.__ModuleLoader__.load({
       .annot-phase-weak { fill: none; stroke-dasharray: 3 4; }
       .annot-phase-label { fill: var(--dsw-alias-label-secondary); font-size:11px; letter-spacing:.02em; }
       .annot-phase-weak + .annot-phase-label { fill: var(--dsw-alias-label-tertiary); }
+      .annot-column-label { fill: var(--dsw-alias-label-primary); font-size:11.5px; font-weight:500; letter-spacing:.02em; }
+      .annot-column-note { fill: var(--dsw-alias-label-tertiary); font-size:10.5px; }
       .annot-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:11px; color: var(--dsw-alias-label-tertiary); margin:0 0 10px; }
       .annot-legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
       .annot-tabs { display:flex; gap:6px; padding:0 14px; border-bottom:1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
@@ -213,6 +215,36 @@ window.__ModuleLoader__.load({
           const label = el('text', { class: 'annot-phase-label', x: 30, y: run.y + 15 });
           label.textContent = `${run.label} · ${run.nodes}`;
           svg.appendChild(label);
+        }
+
+        // The column headers and rails: the panel says which lane is the main
+        // path and which two are its gates and artifacts, or the three columns
+        // read as three unrelated lists.
+        for (const column of layout.columns || []) {
+          svg.appendChild(el('line', {
+            class: 'annot-rail',
+            x1: column.x + column.w + 13,
+            y1: 34,
+            x2: column.x + column.w + 13,
+            y2: layout.height - 26,
+            stroke: 'var(--dsw-alias-border-secondary)',
+            'stroke-width': 1,
+            'stroke-dasharray': '2 5',
+          }));
+        }
+        if ((layout.columnHeaders || []).length) {
+          svg.appendChild(el('line', {
+            x1: 26, y1: 30, x2: layout.width - 26, y2: 30,
+            stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1,
+          }));
+          for (const head of layout.columnHeaders) {
+            const title = el('text', { class: 'annot-column-label', x: head.x, y: 20 });
+            title.textContent = `${head.label}  ${head.count}`;
+            svg.appendChild(title);
+            const note = el('text', { class: 'annot-column-note', x: head.x, y: 36 });
+            note.textContent = head.used ? head.note : '本文件没有这一类';
+            svg.appendChild(note);
+          }
         }
 
         for (const edge of layout.edges) {

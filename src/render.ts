@@ -42,6 +42,10 @@ const ARM_H = 26;
 const SIBLING_GAP = 28;
 const BAND_GAP = 34;
 const PAD = 40;
+/** Space between the three columns of the column layout. */
+const COLUMN_GAP = 26;
+/** The strip above the first row that names the columns and says what they hold. */
+const COLUMN_HEADER_H = 46;
 /**
  * Left margin reserved for the step numbers.
  *
@@ -62,6 +66,8 @@ interface Placed extends FlowNode {
   band: number;
   /** Position inside the band, left to right. */
   slot: number;
+  /** Which column the card is drawn in; the stack layout puts every card in `core`. */
+  col: 'core' | 'side' | 'artifact';
   /** The label already broken into lines, so layout and paint cannot disagree. */
   lines: string[];
   /** The subtitle, wrapped to one line or elided. */
@@ -90,6 +96,25 @@ export interface Layout {
   edges: PlacedEdge[];
   /** One entry per depth band, for the numbered rules the page draws. */
   bands: Array<{ index: number; y: number; count: number }>;
+  /**
+   * The columns that actually carry a card, in drawing order.
+   *
+   * Empty for the single-column layout. The header row names all three; this is
+   * what the rails and the phase rectangles are drawn from, so an empty column
+   * never gets a rail it cannot fill.
+   */
+  columns: Array<{ key: 'core' | 'side' | 'artifact'; label: string; x: number; w: number }>;
+  /** All three column headers, with whether each one carries a card. */
+  columnHeaders: Array<{
+    key: 'core' | 'side' | 'artifact';
+    label: string;
+    /** One line saying what belongs in this column, so the lanes need no legend. */
+    note: string;
+    x: number;
+    w: number;
+    used: boolean;
+    count: number;
+  }>;
   /**
    * Runs of consecutive bands that share a declared phase — or, failing that,
    * the nearest heading that covers at least two cards.
@@ -187,7 +212,7 @@ function isTable(raw: string): boolean {
  * one card reading "# · 字段 · 不通过的样子" with all eight requirements inside
  * a tooltip nobody opens. Rows are kept, capped, and the remainder is counted.
  */
-function tableRows(raw: string, max = 6): string[] {
+function tableRows(raw: string, max = 6, width = NODE_W): string[] {
   const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
   const data = lines.filter((l) => !/^\|?[\s:|-]+\|?$/.test(l));
   const out: string[] = [];
@@ -197,7 +222,7 @@ function tableRows(raw: string, max = 6): string[] {
     const first = cells[0] ?? '';
     const rest = cells.slice(1).filter(Boolean).join(' · ');
     const label = rest ? `${first}  ${rest}` : first;
-    if (label.trim() !== '') out.push(clipToWidth(label, NODE_W - 40, 11));
+    if (label.trim() !== '') out.push(clipToWidth(label, width - 40, 11));
   }
   const hidden = Math.max(0, data.length - 1 - out.length);
   if (hidden > 0) out.push(`…还有 ${hidden} 行`);
@@ -233,15 +258,261 @@ function depthOfDoc(doc: FlowDoc): Map<string, number> {
 }
 
 /**
- * Depth runs downward, siblings run sideways.
+ * Which of the three columns a node is drawn in.
  *
- * The previous layout was a column-major grid: a 19-step pipeline was cut into
- * columns of seven, so reading order went down, then back up to the top of the
- * next column, through arrows that pointed backwards. That is why the picture
- * looked wrong even when the extraction was right. A layered layout puts each
- * node below the one it follows, which is the only order a flow can be read in.
+ * The sketch groups the five types into three lanes because that is what the
+ * reader is actually asking: "what do I do, what decides or calls out, and what
+ * comes out". A gate and an external call share a column on purpose — both are
+ * things that happen *beside* the main step, not steps in the chain.
+ */
+function columnOf(type: NodeType): 'core' | 'side' | 'artifact' {
+  if (type === 'artifact') return 'artifact';
+  if (type === 'gate' || type === 'external') return 'side';
+  return 'core';
+}
+
+/** One core step and everything the source attaches to it. */
+interface Row {
+  /** The step itself; absent only for cards that precede the first step. */
+  core?: FlowNode;
+  /** Gate / external cards, in source order. */
+  side: FlowNode[];
+  /** Artifact cards, in source order. */
+  artifacts: FlowNode[];
+  /** Index of the phase run this row belongs to. */
+  band: number;
+}
+
+/**
+ * One row per core step, with its side cards attached.
+ *
+ * The row is found by walking source order and remembering the last core card,
+ * NOT by picking the nearest core card by line number. Nearest-by-line was
+ * measured first: on `release-checklist` it produced an edge from row 25 to row
+ * 1. "The last core card above me in the document" produced zero backwards
+ * edges on all four real skills, and every edge lands either on its own row
+ * (core → its gate) or the next one (core → next core).
+ */
+function rowsOf(doc: FlowDoc): Row[] {
+  const rows: Row[] = [];
+  let current: Row | undefined;
+  for (const node of doc.nodes) {
+    const column = columnOf(node.type);
+    if (column === 'core') {
+      // Every core step opens a row, even when a side card has already opened
+      // one: the core card is the row's spine and is never displaced.
+      current = { core: node, side: [], artifacts: [], band: 0 };
+      rows.push(current);
+      continue;
+    }
+    if (!current) {
+      // Side cards before the first step still need a row of their own; dropping
+      // them would silently lose a card the page promises to draw.
+      current = { core: undefined, side: [], artifacts: [], band: 0 };
+      rows.push(current);
+    }
+    if (column === 'side') current.side.push(node);
+    else current.artifacts.push(node);
+  }
+  return rows;
+}
+
+/** The card's own height, from its text — shared by both layouts. */
+function cardGeometry(node: FlowNode, width: number) {
+  const lines = wrapLabel(node.label, width - 28);
+  // A second line the author already separated: the artifact, the expectation,
+  // the target. Without it the card is one truncated sentence and the command
+  // underneath stays invisible.
+  const subLines = node.subtitle ? wrapLabel(node.subtitle, width - 28, 1) : [];
+  // A table is a rule, not a title: show its rows so the card carries the
+  // requirement instead of hiding it behind the header. Rows are clipped to the
+  // card they are drawn in — a row measured against the old 360px width
+  // overflows every 165px side card.
+  const rows = isTable(node.raw) ? tableRows(node.raw, 6, width) : [];
+  const arms = layoutArms(node.branches.filter((b) => !b.to).map((b) => b.when), width);
+  const cardH = PAD_TOP + lines.length * LINE_H + subLines.length * SUB_H + rows.length * ROW_H + FOOT_H;
+  return { lines, subLines, rows, arms, cardH, h: cardH + (arms.length ? ARM_H : 0) };
+}
+
+/**
+ * The three columns, as absolute x positions.
+ *
+ * They are absolute rather than per-row so the main path is one straight
+ * vertical trunk: a column that walks left and right at every band boundary is
+ * unreadable no matter how correct each card is.
+ */
+const COLUMN = {
+  core: { x: PAD + GUTTER, w: 420, label: '核心流程', note: '你要按顺序做的事' },
+  side: { x: PAD + GUTTER + 420 + COLUMN_GAP, w: 170, label: '门禁 · 外部调用', note: '这一步靠什么判断 / 调用谁' },
+  artifact: { x: PAD + GUTTER + 420 + COLUMN_GAP + 170 + COLUMN_GAP, w: 170, label: '产物', note: '这一步交出什么' },
+} as const;
+
+const COLUMN_CANVAS = COLUMN.artifact.x + COLUMN.artifact.w + PAD;
+
+/**
+ * Depth runs downward, siblings run sideways — now with side cards beside the
+ * step they belong to.
+ *
+ * The previous layout gave every node its own band, so a 34-node skill was 34
+ * anonymous rows and a gate sat between two steps it had nothing to do with.
+ * Here the main path is one row per core step and the gates, external calls and
+ * artifacts sit on the same row, in their own column: the picture says "this
+ * step is checked by this gate", which is what the source says.
+ *
+ * A document with no side cards keeps the old single-column layout: three
+ * columns would leave two thirds of the canvas empty for nothing.
  */
 export function layoutNodes(doc: FlowDoc): Layout {
+  const hasSide = doc.nodes.some((n) => columnOf(n.type) !== 'core');
+  return hasSide ? layoutColumns(doc) : layoutStack(doc);
+}
+
+function layoutColumns(doc: FlowDoc): Layout {
+  const rows = rowsOf(doc);
+
+  const placed: Placed[] = [];
+  const bands_: Layout['bands'] = [];
+  const bandSpans = new Map<number, { y: number; h: number }>();
+  let cursorY = PAD + COLUMN_HEADER_H;
+
+  rows.forEach((row, index) => {
+    const cells: Array<{ node: FlowNode; column: keyof typeof COLUMN }> = [];
+    if (row.core) cells.push({ node: row.core, column: 'core' });
+    for (const node of row.side) cells.push({ node, column: 'side' });
+    for (const node of row.artifacts) cells.push({ node, column: 'artifact' });
+
+    // A row is as tall as its tallest cell; a second card in the same column
+    // stacks under the first, so those two heights add instead of max.
+    const columnHeights = new Map<string, number>();
+    const geometries = new Map<string, ReturnType<typeof cardGeometry>>();
+    for (const cell of cells) {
+      const geo = cardGeometry(cell.node, COLUMN[cell.column].w);
+      geometries.set(cell.node.id, geo);
+      const stacked = columnHeights.get(cell.column) ?? 0;
+      columnHeights.set(cell.column, stacked + geo.h + (stacked > 0 ? SIBLING_GAP : 0));
+    }
+    const rowH = Math.max(64, ...columnHeights.values());
+
+    // Each column stacks downward from the same top edge, so two cards in the
+    // same row never overlap and a lone card is never centred against a stack.
+    const offsets = new Map<string, number>();
+    for (const [column, height] of columnHeights) {
+      offsets.set(column, (rowH - height) / 2);
+    }
+    for (const cell of cells) {
+      const geo = geometries.get(cell.node.id);
+      if (!geo) continue;
+      const offset = offsets.get(cell.column) ?? 0;
+      offsets.set(cell.column, offset + geo.h + SIBLING_GAP);
+      placed.push({
+        ...cell.node,
+        ...geo,
+        band: index,
+        slot: 0,
+        col: cell.column,
+        x: COLUMN[cell.column].x,
+        y: cursorY + offset,
+        w: COLUMN[cell.column].w,
+      });
+    }
+
+    bands_.push({ index, y: cursorY, count: cells.length });
+    bandSpans.set(index, { y: cursorY, h: rowH });
+    cursorY += rowH + BAND_GAP;
+  });
+
+  const byId = new Map(placed.map((p) => [p.id, p]));
+  const edges: PlacedEdge[] = [];
+  for (const edge of doc.edges) {
+    const a = byId.get(edge.from);
+    const b = byId.get(edge.to);
+    if (!a || !b || a === b) continue;
+    const isBranch = edge.kind === 'branch';
+    const route = routeBetween(a, b);
+    edges.push({ ...edge, d: route.d, labelX: route.labelX, labelY: route.labelY, showLabel: isBranch });
+  }
+
+  // Only the columns that carry a card are drawn: an empty rail is a promise the
+  // document does not keep. The header row still names all three, so the reader
+  // knows what the other lanes would have held.
+  const used = new Set(placed.map((p) => p.col));
+  const columns = (Object.keys(COLUMN) as Array<keyof typeof COLUMN>)
+    .filter((key) => used.has(key))
+    .map((key) => ({ key, label: COLUMN[key].label, x: COLUMN[key].x, w: COLUMN[key].w }));
+
+  return {
+    width: COLUMN_CANVAS,
+    height: Math.max(PAD + COLUMN_HEADER_H, cursorY - BAND_GAP + PAD),
+    nodes: placed,
+    edges,
+    bands: bands_,
+    columns,
+    columnHeaders: (Object.keys(COLUMN) as Array<keyof typeof COLUMN>).map((key) => ({
+      key,
+      label: COLUMN[key].label,
+      note: COLUMN[key].note,
+      x: COLUMN[key].x,
+      w: COLUMN[key].w,
+      used: used.has(key),
+      count: placed.filter((p) => p.col === key).length,
+    })),
+    phaseRuns: phaseRuns(placed, bandSpans),
+  };
+}
+
+/**
+ * Two plates in a column layout: down, right, or round the corner.
+ *
+ * Every edge the extractor produces lands on its own row or the next one (see
+ * `rowsOf`), so four shapes cover all of them. A destination above the source
+ * would need a connector travelling up the page, so it is drawn as a plain
+ * drop and flagged in the geometry rather than looping around the canvas.
+ */
+function routeBetween(a: Placed, b: Placed): { d: string; labelX: number; labelY: number } {
+  const sameColumn = a.col === b.col;
+  const below = b.y >= a.y + a.h - 1;
+  const midY = below ? a.y + a.h + (b.y - (a.y + a.h)) / 2 : a.y + a.h / 2;
+
+  if (sameColumn) {
+    const x1 = a.x + a.w / 2;
+    const y1 = a.y + a.h;
+    const x2 = b.x + b.w / 2;
+    const y2 = b.y;
+    return { d: `M ${x1} ${y1} L ${x2} ${y2}`, labelX: x1, labelY: (y1 + y2) / 2 };
+  }
+
+  const aRight = a.x < b.x;
+  const x1 = aRight ? a.x + a.w : a.x;
+  const x2 = aRight ? b.x : b.x + b.w;
+
+  // Same row: a straight horizontal rule between the two plates, which is what
+  // "this step is checked by that gate" should look like.
+  if (!below && !(b.y + b.h <= a.y)) {
+    const y = Math.max(a.y, b.y) + Math.min(a.h, b.h) / 2;
+    return { d: `M ${x1} ${y} L ${x2} ${y}`, labelX: (x1 + x2) / 2, labelY: y - 6 };
+  }
+
+  // Different rows: leave the bottom of the source, turn once in the gap, enter
+  // the destination from its top.
+  const y1 = a.y + a.h;
+  const y2 = b.y;
+  const xm = x1 + (x2 - x1) / 2;
+  void midY;
+  return {
+    d: `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`,
+    labelX: (x1 + x2) / 2,
+    labelY: midY - 6,
+  };
+}
+
+/**
+ * The old one-row-per-node layout, kept for documents with no side cards.
+ *
+ * Depth runs downward, siblings run sideways. The column-major grid it replaced
+ * cut a 19-step pipeline into columns of seven, so reading order went down then
+ * back to the top, through arrows that pointed backwards.
+ */
+function layoutStack(doc: FlowDoc): Layout {
   const depth = depthOfDoc(doc);
 
   const bands = new Map<number, FlowNode[]>();
@@ -259,8 +530,7 @@ export function layoutNodes(doc: FlowDoc): Layout {
   // The canvas never gets narrower than one comfortable card, and it uses the
   // width it is given: at 1440 the pane is 981px and a 528px graph left 454px
   // empty at every scroll position. The extra room goes to the card, not to
-  // padding — a wider card wraps a long label into fewer lines, and on
-  // `release-checklist` one saved line per card is a whole screen.
+  // padding — a wider card wraps a long label into fewer lines.
   const width = Math.max(strip(widestCount, NODE_W) + PAD * 2 + GUTTER, MIN_CANVAS);
   const cardW = Math.min(
     NODE_W_MAX,
@@ -269,7 +539,7 @@ export function layoutNodes(doc: FlowDoc): Layout {
   const widestCardWidth = strip(widestCount, cardW);
 
   const placed: Placed[] = [];
-  const bands_: Array<{ index: number; y: number; count: number }> = [];
+  const bands_: Layout['bands'] = [];
   /** The vertical extent of each band, so a phase run can bracket its members. */
   const bandSpans = new Map<number, { y: number; h: number }>();
   let cursorY = PAD;
@@ -277,19 +547,7 @@ export function layoutNodes(doc: FlowDoc): Layout {
   for (const band of ordered) {
     const members = [...(bands.get(band) ?? [])].sort((a, b) => a.anchor.start - b.anchor.start);
     const bandW = strip(members.length, cardW);
-    const geometries = members.map((node) => {
-      const lines = wrapLabel(node.label, cardW - 28);
-      // A second line the author already separated: the artifact, the
-      // expectation, the target. Without it the card is one truncated sentence
-      // and the command underneath stays invisible.
-      const subLines = node.subtitle ? wrapLabel(node.subtitle, cardW - 28, 1) : [];
-      // A table is a rule, not a title: show its rows so the card carries the
-      // requirement instead of hiding it behind the header.
-      const rows = isTable(node.raw) ? tableRows(node.raw) : [];
-      const arms = layoutArms(node.branches.filter((b) => !b.to).map((b) => b.when), cardW);
-      const cardH = PAD_TOP + lines.length * LINE_H + subLines.length * SUB_H + rows.length * ROW_H + FOOT_H;
-      return { node, lines, subLines, rows, arms, cardH, h: cardH + (arms.length ? ARM_H : 0) };
-    });
+    const geometries = members.map((node) => cardGeometry(node, cardW));
     const bandH = Math.max(...geometries.map((g) => g.h));
     const left = PAD + GUTTER + (widestCardWidth - bandW) / 2;
     bands_.push({ index: band, y: cursorY, count: members.length });
@@ -297,18 +555,14 @@ export function layoutNodes(doc: FlowDoc): Layout {
 
     geometries.forEach((geometry, slot) => {
       placed.push({
-        ...geometry.node,
-        lines: geometry.lines,
-        subLines: geometry.subLines,
-        rows: geometry.rows,
-        arms: geometry.arms,
-        cardH: geometry.cardH,
+        ...members[slot],
+        ...geometry,
         band,
         slot,
+        col: columnOf(members[slot].type),
         x: left + slot * (cardW + SIBLING_GAP),
         y: cursorY + (bandH - geometry.h) / 2,
         w: cardW,
-        h: geometry.h,
       });
     });
 
@@ -322,29 +576,8 @@ export function layoutNodes(doc: FlowDoc): Layout {
     const a = byId.get(edge.from);
     const b = byId.get(edge.to);
     if (!a || !b || a === b) continue;
-
-    const isBranch = edge.kind === 'branch';
-    const x1 = a.x + a.w / 2;
-    const y1 = a.y + a.h;
-    const x2 = b.x + b.w / 2;
-    const y2 = b.y;
-
-    // A straight drop when the two are stacked, an elbow when the child sits in
-    // a neighbouring slot. Ruled lines, no curves: the card is a plate and the
-    // connection is a rule, which is how a spec sheet draws a dependency.
-    if (Math.abs(x1 - x2) < 1) {
-      edges.push({ ...edge, d: `M ${x1} ${y1} L ${x2} ${y2}`, labelX: x1, labelY: (y1 + y2) / 2, showLabel: isBranch });
-      continue;
-    }
-
-    const midY = y1 + (y2 - y1) / 2;
-    edges.push({
-      ...edge,
-      d: `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`,
-      labelX: (x1 + x2) / 2,
-      labelY: midY - 6,
-      showLabel: isBranch,
-    });
+    const route = routeBetween(a, b);
+    edges.push({ ...edge, d: route.d, labelX: route.labelX, labelY: route.labelY, showLabel: edge.kind === 'branch' });
   }
 
   return {
@@ -353,10 +586,24 @@ export function layoutNodes(doc: FlowDoc): Layout {
     nodes: placed,
     edges,
     bands: bands_,
+    columns: [],
+    columnHeaders: [],
     phaseRuns: phaseRuns(placed, bandSpans),
   };
 }
 
+/**
+ * The chapter bands, as rectangles over the bands they actually cover.
+ *
+ * Only *consecutive* bands join a run: `release-checklist` puts its phase
+ * headings in source order, so Phase 1 / 2 / 3 land in three contiguous runs.
+ * A label that reappears after another one produces two runs rather than one
+ * rectangle swallowing what sits between them.
+ *
+ * A run holding a single card is dropped. Measured on four real skills, 44 of
+ * 88 heading runs were singletons, and bracketing those produced more borders
+ * than structure.
+ */
 /**
  * The chapter bands, as rectangles over the bands they actually cover.
  *
@@ -525,6 +772,30 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   .facts .bad b { color: var(--accent); }
 
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 0; align-items: start; }
+  #stage { min-width: 0; }
+  /* The tool strip: find, zoom, and the trace readout. It is chrome, so it is
+     hairline-thin and sits above the canvas instead of floating over the graph —
+     an overlay would hide the top row of cards exactly where a reader starts. */
+  #tools {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 32px; border-bottom: 1px solid var(--rule); background: var(--plate);
+    position: sticky; top: 0; z-index: 2;
+  }
+  #tools label { font-size: 11.5px; color: var(--muted); }
+  #tools input[type="search"] {
+    font-family: var(--font-body); font-size: 12.5px; color: var(--ink);
+    background: var(--paper); border: 1px solid var(--rule); padding: 3px 8px; width: 180px;
+  }
+  #tools input[type="search"]:focus { border-color: var(--rule-ink); outline: none; }
+  #tools button {
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-2);
+    background: var(--paper); border: 1px solid var(--rule); padding: 3px 9px; cursor: pointer;
+    min-width: 30px;
+  }
+  #tools button:hover { border-color: var(--rule-ink); }
+  #tools button:disabled { color: var(--rule); cursor: default; border-color: var(--rule); }
+  #tools .count { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #trace { font-size: 11.5px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
   #canvas { overflow: auto; padding: 0; min-height: 60vh; }
   /* Centred while it fits, left-anchored once it does not: a narrow chain in a
      wide pane should not cling to the left edge, and a wide graph must still
@@ -595,11 +866,30 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
   .node:active rect.card { stroke-width: 2.5; }
   .node.sel rect.card { stroke-width: 2; }
   .node text { pointer-events: none; }
+  /* Tracing: while one card is under the pointer, the cards on its path stay at
+     full ink and everything else drops to a wash. Opacity, not colour: the type
+     ink is the card's meaning and must not change while reading. */
+  svg.tracing .node:not(.hot) { opacity: .28; }
+  svg.tracing .node.hot rect.card { stroke-width: 2; }
+  svg.tracing .edge:not(.hot) { opacity: .18; }
+  svg.tracing .edge.hot { stroke-width: 2; stroke-dasharray: none; }
+  /* A search hit keeps the accent rule, so it is legible through the wash a
+     trace puts on the rest of the page. */
+  .node.hit rect.card { stroke: var(--accent); stroke-width: 1.5; }
+  .node.sel-hit rect.card { stroke-width: 3; }
   .edge { fill: none; stroke: var(--rule-ink); stroke-width: 1.2; }
   .edge.branch { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 4 3; }
   .edge-label { fill: var(--accent-2); font-family: var(--font-body); font-size: 10.5px; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }
   .stepnum { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
   .steprule { stroke: var(--rule); stroke-width: 1; }
+  /* A column rail is a hairline, not a border: the columns are a reading aid and
+     must not compete with the phase rectangles that carry real structure. */
+  .rail { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 5; }
+  .rail-head { stroke: var(--rule-ink); stroke-width: 1; }
+  .column-label { fill: var(--ink); font-family: var(--font-body); font-weight: 500; letter-spacing: .02em; }
+  .column-label.unused { fill: var(--muted); font-weight: 400; }
+  .column-note { fill: var(--muted); font-family: var(--font-body); }
+  .column-note.unused { fill: var(--rule); }
   /* A phase band is the structure the author declared, drawn behind the cards.
      It carries no type ink: the type is the card's business, the phase is the
      page's. A label sits at the band's top-left, on the band itself. */
@@ -644,7 +934,18 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
 </header>
 <div class="wrap">
   <div class="split">
-    <div id="canvas"></div>
+    <div id="stage">
+      <div id="tools">
+        <label for="find">查找</label>
+        <input id="find" type="search" placeholder="标签 / id / 行号" autocomplete="off" spellcheck="false" />
+        <span class="count" id="hits"></span>
+        <button id="zoom-out" type="button" title="缩小（-）" aria-label="缩小">−</button>
+        <button id="zoom-reset" type="button" title="回到 100%（0）">100%</button>
+        <button id="zoom-in" type="button" title="放大（+）" aria-label="放大">+</button>
+        <span id="trace">悬停一格看它的上下游</span>
+      </div>
+      <div id="canvas"></div>
+    </div>
     <aside id="detail">
       <h2>评估</h2>
       <div class="score"><b>${scored.total}</b><span>/ 100 抽取可读度</span></div>
@@ -654,7 +955,7 @@ export function renderHtml(doc: FlowDoc, options: { title?: string } = {}): stri
       <h2>形状</h2>
       ${shapeHtml}
       <h2>怎么读</h2>
-      <p class="muted" style="margin:0">自上而下是原文顺序，实线是相邻两步，橙色虚线是文件里写明的分支。灰色底带是文件里<strong>自己声明的阶段</strong>（<code>Phase 1</code> / <code>阶段二</code> 这类小节）；虚线框是普通章节，只在它至少罩住两格时才画。每条带右上角的数字是它含的格子数。格子右下角写着<strong>谁做这件事</strong>。点开格子看它的行号与原文。</p>
+      <p class="muted" style="margin:0">左列是<strong>你要按顺序做的事</strong>，同一行的右两列是这一步<strong>靠什么判断</strong>、<strong>交出什么</strong>。一条竖线只连相邻两步，橙色虚线是文件里写明的分支。灰色底带是文件里<strong>自己声明的阶段</strong>（<code>Phase 1</code> / <code>阶段二</code> 这类小节）；虚线框是普通章节，只在它至少罩住两格时才画。每条带右上角的数字是它含的格子数。格子右下角写着<strong>谁做这件事</strong>。点开格子看它的行号与原文。</p>
       <h2>类型</h2>
       <div class="legend">${legend()}</div>
       <h2>谁做</h2>
@@ -801,6 +1102,26 @@ function svgText(x, y, str, attrs) {
   return t;
 }
 function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+/* The same CJK-aware estimate the layout uses, so a footer clipped here cannot
+   disagree with the card width the server measured. */
+function textWidthIn(text, fontPx) {
+  let width = 0;
+  for (const char of String(text)) {
+    const code = char.codePointAt(0) || 0;
+    const wide = (code >= 0x2e80 && code <= 0x9fff) || (code >= 0xff00 && code <= 0xffef);
+    width += wide ? fontPx : fontPx * 0.56;
+  }
+  return width;
+}
+function clipToWidth(text, maxPx, fontPx) {
+  if (textWidthIn(text, fontPx) <= maxPx) return text;
+  let out = '';
+  for (const char of String(text)) {
+    if (textWidthIn(out + char + '…', fontPx) > maxPx) break;
+    out += char;
+  }
+  return out + '…';
+}
 function escapeHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -827,6 +1148,28 @@ for (const run of (layout.phaseRuns || [])) {
   svg.appendChild(svgEl('rect', { class: 'phase' + weak, x: 20, y: run.y, width: layout.width - 40, height: run.h }));
 }
 
+/* The column rails come before the rules so a hairline never cuts through a
+   header. An empty column draws no rail: a lane that holds nothing is a promise
+   the document does not keep, and the header still names it. */
+for (const column of (layout.columns || [])) {
+  svg.appendChild(svgEl('line', { class: 'rail', x1: column.x + column.w + 13, y1: 34, x2: column.x + column.w + 13, y2: layout.height - 26 }));
+}
+if ((layout.columnHeaders || []).length) {
+  svg.appendChild(svgEl('line', { class: 'rail-head', x1: 26, y1: 30, x2: layout.width - 26, y2: 30 }));
+  for (const head of layout.columnHeaders) {
+    // The header carries its own count: "门禁 · 外部调用 6" answers "is this lane
+    // part of the flow or just a category I invented" without a legend.
+    svg.appendChild(svgText(head.x, 20, head.label + '  ' + head.count, {
+      class: 'column-label' + (head.used ? '' : ' unused'),
+      'font-size': 11.5,
+    }));
+    svg.appendChild(svgText(head.x, 36, head.used ? head.note : '本文件没有这一类', {
+      class: 'column-note' + (head.used ? '' : ' unused'),
+      'font-size': 10.5,
+    }));
+  }
+}
+
 for (const band of (layout.bands || [])) {
   svg.appendChild(svgEl('line', { class: 'steprule', x1: 26, y1: band.y - 7, x2: layout.width - 26, y2: band.y - 7 }));
   svg.appendChild(svgText(26, band.y + 4, String(band.index + 1).padStart(2, '0'), { class: 'stepnum' }));
@@ -834,7 +1177,7 @@ for (const band of (layout.bands || [])) {
 
 for (const e of layout.edges) {
   const isBranch = e.kind === 'branch';
-  const path = svgEl('path', { d: e.d, class: 'edge' + (isBranch ? ' branch' : ''), 'marker-end': 'url(#' + (isBranch ? 'arrow-hot' : 'arrow') + ')' });
+  const path = svgEl('path', { d: e.d, class: 'edge' + (isBranch ? ' branch' : ''), 'data-from': e.from, 'data-to': e.to, 'marker-end': 'url(#' + (isBranch ? 'arrow-hot' : 'arrow') + ')' });
   svg.appendChild(path);
   if (isBranch && e.showLabel && e.when) {
     svg.appendChild(svgText(e.labelX, e.labelY, clip(e.when, 22), { class:'edge-label', 'text-anchor':'middle' }));
@@ -882,9 +1225,12 @@ for (const n of layout.nodes) {
     g.appendChild(svgText(12, rowTop + i * 15, row, { 'font-size':11, style: 'fill: var(--ink-2)' }));
   });
 
+  // The card footer carries the anchor and the rule. In a 165px side card the
+  // full "L24–26 · 55% · code-with-calls" is 173px wide and splits the box, so
+  // the footer is clipped to the card it is drawn in.
   const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%' +
     (n.rule ? ' · ' + n.rule : '');
-  g.appendChild(svgText(12, cardH - 10, foot, { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
+  g.appendChild(svgText(12, cardH - 10, clipToWidth(foot, n.w - 24, 10.5), { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
 
   // The lane answers "who does this", the type answers "what kind of thing is
   // it". Two ranks in the same row: type left, lane right.
@@ -918,10 +1264,174 @@ for (const n of layout.nodes) {
   }
 
   g.addEventListener('click', function () { select(n, g); });
+  g.addEventListener('mouseenter', function () { trace(n.id); });
+  g.addEventListener('mouseleave', function () { trace(null); });
+  g.setAttribute('tabindex', '0');
+  g.setAttribute('role', 'button');
+  g.addEventListener('focus', function () { trace(n.id); });
+  g.addEventListener('blur', function () { trace(null); });
   svg.appendChild(g);
 }
 document.getElementById('canvas').appendChild(svg);
 renderTodos();
+
+/* ---- Tracing: what does this card come from, and what does it lead to? ----
+   The graph is 34 cards tall, so a reader who finds step 19 has no way to know
+   which two gates belong to it. Hovering keeps the card and its immediate
+   neighbours at full ink and washes out everything else.
+
+   Immediate neighbours, not the transitive closure: the main path is one chain,
+   so "everything downstream of step 1" is the other thirty-three cards, which
+   is the same as no highlight at all. Measured on release-checklist, the closure
+   from its first row is 33 of 34 — the direct set is 4. */
+const OUT = new Map();
+const IN = new Map();
+for (const e of layout.edges) {
+  if (!OUT.has(e.from)) OUT.set(e.from, []);
+  if (!IN.has(e.to)) IN.set(e.to, []);
+  OUT.get(e.from).push(e.to);
+  IN.get(e.to).push(e.from);
+}
+
+function trace(id) {
+  for (const g of svg.querySelectorAll('.node.hot, .node.dim')) g.classList.remove('hot', 'dim');
+  for (const edge of svg.querySelectorAll('.edge.hot')) edge.classList.remove('hot');
+  const readout = document.getElementById('trace');
+
+  if (!id) {
+    svg.classList.remove('tracing');
+    readout.textContent = '悬停一格看它的上下游';
+    return;
+  }
+
+  const directUp = IN.get(id) || [];
+  const directDown = OUT.get(id) || [];
+  const hot = new Set([id, ...directUp, ...directDown]);
+  svg.classList.add('tracing');
+  for (const g of svg.querySelectorAll('.node')) {
+    g.classList.add(hot.has(g.getAttribute('data-id')) ? 'hot' : 'dim');
+  }
+  for (const edge of svg.querySelectorAll('.edge')) {
+    if (hot.has(edge.getAttribute('data-from')) && hot.has(edge.getAttribute('data-to'))) edge.classList.add('hot');
+  }
+
+  const node = layout.nodes.find(function (n) { return n.id === id; });
+  const label = function (nid) {
+    const found = layout.nodes.find(function (n) { return n.id === nid; });
+    return found ? clipToWidth(found.label, 96, 11) : nid;
+  };
+  const parts = [];
+  if (directUp.length) parts.push('从「' + directUp.map(label).join('」「') + '」来');
+  if (directDown.length) parts.push('到「' + directDown.map(label).join('」「') + '」');
+  readout.textContent = (node ? 'L' + node.anchor.start + '–' + node.anchor.end + ' · ' : '') + (parts.join(' · ') || '此格不与任何格子相连');
+}
+
+/* ---- Zoom: the canvas reports its own size, so scaling the element is the
+   whole change; the pane keeps its scroll position around the pointer. ---- */
+const ZOOMS = [0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
+let zoom = 3;
+
+function applyZoom(next, anchor) {
+  zoom = Math.max(0, Math.min(ZOOMS.length - 1, next));
+  const scale = ZOOMS[zoom];
+  const pane = document.getElementById('canvas');
+  const before = anchor || { x: pane.clientWidth / 2, y: pane.clientHeight / 2 };
+  const graphX = (pane.scrollLeft + before.x) / (svg.getAttribute('width') / layout.width || 1);
+  const graphY = (pane.scrollTop + before.y) / (svg.getAttribute('height') / layout.height || 1);
+
+  svg.setAttribute('width', Math.round(layout.width * scale));
+  svg.setAttribute('height', Math.round(layout.height * scale));
+  pane.scrollLeft = graphX * scale - before.x;
+  pane.scrollTop = graphY * scale - before.y;
+
+  document.getElementById('zoom-reset').textContent = Math.round(scale * 100) + '%';
+  document.getElementById('zoom-in').disabled = zoom === ZOOMS.length - 1;
+  document.getElementById('zoom-out').disabled = zoom === 0;
+}
+
+document.getElementById('zoom-in').addEventListener('click', function () { applyZoom(zoom + 1); });
+document.getElementById('zoom-out').addEventListener('click', function () { applyZoom(zoom - 1); });
+document.getElementById('zoom-reset').addEventListener('click', function () {
+  const pane = document.getElementById('canvas');
+  applyZoom(3);
+  pane.scrollTop = 0;
+});
+/* Ctrl+wheel zooms at the pointer; a plain wheel still scrolls the page, which
+   is what a reader expects when a diagram is 4 screens tall. */
+document.getElementById('canvas').addEventListener('wheel', function (event) {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  const box = svg.getBoundingClientRect();
+  applyZoom(zoom + (event.deltaY < 0 ? 1 : -1), {
+    x: event.clientX - box.left,
+    y: event.clientY - box.top,
+  });
+}, { passive: false });
+
+document.addEventListener('keydown', function (event) {
+  if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
+  if (event.key === '+' || event.key === '=') { event.preventDefault(); applyZoom(zoom + 1); }
+  else if (event.key === '-') { event.preventDefault(); applyZoom(zoom - 1); }
+  else if (event.key === '0') { event.preventDefault(); applyZoom(3); }
+  else if (event.key === '/') { event.preventDefault(); document.getElementById('find').focus(); }
+});
+
+/* ---- Find: 34 cards is past what a reader will scan, so the label, the id and
+   the line number all have to be searchable, and Enter walks the hits. ---- */
+const find = document.getElementById('find');
+const hits = document.getElementById('hits');
+let matched = [];
+let matchAt = -1;
+
+function search() {
+  const term = find.value.trim().toLowerCase();
+  for (const g of svg.querySelectorAll('.node.hit')) g.classList.remove('hit');
+  matched = [];
+  matchAt = -1;
+  if (!term) {
+    hits.textContent = '';
+    return;
+  }
+  for (const g of svg.querySelectorAll('.node')) {
+    const id = g.getAttribute('data-id');
+    const node = layout.nodes.find(function (n) { return n.id === id; });
+    if (!node) continue;
+    const haystack = (node.label + ' ' + node.id + ' ' + (node.subtitle || '') + ' ' + node.anchor.start + ' ' + node.anchor.end + ' ' + (node.phase || '')).toLowerCase();
+    if (haystack.indexOf(term) !== -1) {
+      g.classList.add('hit');
+      matched.push(g);
+    }
+  }
+  hits.textContent = matched.length ? matched.length + ' 处' : '没有匹配';
+  if (matched.length) jump(0);
+}
+
+function jump(index) {
+  if (!matched.length) return;
+  matchAt = (index + matched.length) % matched.length;
+  if (matchAt === 0) for (const g of matched) g.classList.remove('sel-hit');
+  matched[matchAt].classList.add('sel-hit');
+  const node = layout.nodes.find(function (n) { return n.id === matched[matchAt].getAttribute('data-id'); });
+  const pane = document.getElementById('canvas');
+  if (node) {
+    const scale = svg.getAttribute('height') / layout.height || 1;
+    pane.scrollTop = node.y * scale - pane.clientHeight / 2;
+    pane.scrollLeft = 0;
+  }
+  hits.textContent = matched.length + ' 处 · 第 ' + (matchAt + 1) + ' 个';
+}
+
+find.addEventListener('input', search);
+find.addEventListener('keydown', function (event) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    jump(matchAt + (event.shiftKey ? -1 : 1));
+  } else if (event.key === 'Escape') {
+    find.value = '';
+    search();
+    find.blur();
+  }
+});
 
 function renderTodos() {
   const open = doc.nodes.filter(function (n) { return n.branches.some(function (b) { return !b.to; }) || n.confidence < 0.6; });

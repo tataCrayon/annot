@@ -52,8 +52,12 @@ test('maxDepth counts sequence steps, not heading nesting', () => {
   const layout = layoutNodes(doc);
   // The bug: `maxDepth` was `anchor.heading.length`, so this 26-step pipeline
   // reported 2 while the canvas drew 26 bands.
-  assert.equal(doc.stats.maxDepth, layout.bands.length);
   assert.ok(doc.stats.maxDepth > 10, `maxDepth ${doc.stats.maxDepth} is still reporting heading depth`);
+  // It counts steps, not rows: since the column layout puts a gate on the same
+  // row as its step, the canvas has fewer rows than the document has steps, and
+  // both numbers are right about different things.
+  assert.equal(doc.stats.maxDepth, doc.nodes.length);
+  assert.ok(layout.bands.length < doc.nodes.length, 'every node still got its own row');
 });
 
 test('a skill whose steps are all prose is not scored as unreadable', () => {
