@@ -126,6 +126,9 @@ node --test "test\schema.test.js"        # 6 条，schema 与写出方不脱节
 
 **这是本项目最有价值的方法论资产**：每个"到底该怎么画"的判断都先写一个量测脚本，再改代码。别跳过这一步直接用眼睛调。
 
+> ⚠️ **产物目录名和 HTML 文件名不一致，别当成 bug**：`all-skills.mjs` 用循环里的标签命名输出目录，所以 `archery-query` 的产物落在 `sandbox/work/all/archetypes/`，但里面的文件叫 `archery-query.flow.json` / `archery-query.html`（文件名来自 frontmatter 的 `name`）。
+> 直接看图：`sandbox/work/all/release-checklist/release-checklist.html`
+
 | 脚本 | 量什么 |
 |---|---|
 | `all-skills.mjs` | 五份 skill 的 annotate → render → verify 一遍，打印读数 |

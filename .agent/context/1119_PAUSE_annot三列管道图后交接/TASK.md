@@ -78,7 +78,7 @@ node sandbox/ui-check.mjs "D:\Projects\flp\vibeskill\sandbox\work\all\release-ch
 具体做法（`docs/00-status.md` 末尾也写了）：给节点补一条"分支落点来自哪张表的首列"的抽取规则，把 `grill-method` 的 `守住/改良/替换` 变成三个可连目标。
 **验收判据**：`annotate` 报告的 `forks` 行里 `bound` 从 0 变成 3，且 `bands` 少于 `nodes`。
 
-⚠️ **这一步会和当前三列布局冲突**：列模型假定"侧卡挂在它前面那个核心步骤上"（实测 0 倒挂，只对线性图成立）。一旦 `branch` 边出现，两条分支指向不同后续，侧卡归属不再唯一，`src/render.ts` 的 `rowsOf()` 行规则必须重新推导。**动布局之前先读 CONTEXT.md 的「布局」章节。**
+⚠️ **这一步会和当前三列布局冲突**：列模型假定"侧卡挂在它前面那个核心步骤上"（实测 0 倒挂，只对线性图成立）。一旦 `branch` 边出现，两条分支指向不同后续，侧卡归属不再唯一，`src/render.ts` 的 `rowsOf()` 行规则必须重新推导。**动布局之前先读 `CONTEXT.md` 的 §1.3 与 §3 决策 5。**
 
 ## 边界与约束（不要越界）
 
@@ -94,7 +94,7 @@ node sandbox/ui-check.mjs "D:\Projects\flp\vibeskill\sandbox\work\all\release-ch
 
 改动算完成，必须同时满足：
 1. `node --test test/*.test.ts test/*.test.js` 全绿，且**新增能力有对应断言**（不是只跑通）
-2. 五份真实 skill 四视口 `verify` 全绿：`release-checklist` / `agent-dev-standards` / `challenge` / `archery-query`(frontmatter 里叫 `archetypes`) / `grill-method`
+2. 五份真实 skill 四视口 `verify` 全绿：`release-checklist` / `agent-dev-standards` / `challenge` / `archery-query` / `grill-method`（最后一个来自 `test/fixtures/grill-method.md`，磁盘上没有这个 skill）
 3. 动到产物或交互时，`sandbox/ui-check.mjs` 17 条仍全绿
 4. `bash sandbox/run.sh` 7 段全绿
 5. 文档三处同步：`docs/00-status.md`（状态与洞）、`docs/03-prior-art...`（借了什么没借什么）、`README.md`（测试数与读图说明）

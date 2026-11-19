@@ -25,7 +25,7 @@
 | `release-checklist` | 34 | 33 | 26 | 980×3711（4.1 屏@900） | 0 |
 | `agent-dev-standards` | 19 | 18 | — | 2119 高 | 0 |
 | `challenge` | 13 | 12 | — | — | 0 |
-| `archery-query`（frontmatter 名 `archetypes`） | 11 | 10 | — | — | 0 |
+| `archery-query` | 11 | 10 | — | — | 0 |
 | `grill-method`（fixture，磁盘上没有这个 skill） | 26 | 25 | 19 | 980×2931（3.3 屏@900） | **3（全部未落地）** |
 
 `release-checklist` 列分配：`核心 25 / 门禁 6 / 产物 3`；面板行、旁注、副标题 `8/34`；标签截断 `9/34`。
