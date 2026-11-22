@@ -3,6 +3,7 @@
 **Inspect, evaluate, and optimize Agent Skills across tools.**<br>
 把 `SKILL.md` 拆成带源码锚点的动作图，汇总整库问题，生成宿主 Agent 可执行的优化任务，并保存可比较的版本快照。
 
+[![Version](https://img.shields.io/badge/version-0.1.0-9f451f)](#快速开始)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.18-2f6f4e)](https://nodejs.org/)
 [![Tests](https://img.shields.io/badge/tests-242%20passing-2f6f4e)](#隔离测试)
 [![Local first](https://img.shields.io/badge/data-local--first-9f451f)](#设计约束故意不做的事)
@@ -10,9 +11,20 @@
 
 > 一个 Skill 引擎，多种宿主外壳。Codex、DSH、ZCode 与独立网页共享同一套扫描、分析、校验和评估代码。
 
-## Screenshots
+## 目录
 
-![annot system skill action graph](docs/assets/system-skill-graph.png)
+- [界面预览](#界面预览)
+- [多工具支持](#多工具支持)
+- [核心能力](#核心能力)
+- [快速开始](#快速开始)
+- [从自然语言到评估闭环](#从自然语言到评估闭环)
+- [AI-first 语义分析](#ai-first-语义分析)
+- [命令](#命令)
+- [开发与验证](#开发与验证)
+
+## 界面预览
+
+![source-linked Skill action graph with separate action, rule and artifact lanes](docs/assets/skill-action-graph.png)
 
 | 整库评估 | 版本管理 |
 |---|---|
@@ -43,9 +55,9 @@
 - **本地优先**：工作台只监听 `127.0.0.1`，不上传 Skill 内容，也不在浏览器里直接写 Skill 源文件。
 
 ---
-## 为什么不是又一个"Skill 可视化"
+## 为什么源码锚点重要
 
-现有的 Skill 可视化工具（见 [skillscope](https://github.com/silvesterdivas/skillscope)）从 markdown 里**猜** triggers 和 branches。猜出来的图不可复现、不可 diff、改完不知道哪里变了。
+很多 Skill 可视化工具只能从 Markdown 文本中**猜**结构，结果难以复现、diff，也不容易判断改动影响了哪些节点。
 
 annot 的差别只有一件事：**每个节点都锚死在 SKILL.md 的具体行上，并且记住那几行的哈希。**
 
@@ -53,7 +65,7 @@ annot 的差别只有一件事：**每个节点都锚死在 SKILL.md 的具体�
 node.anchor = { heading: [...], start: 65, end: 72, sha: "a3f1…" }
 ```
 
-这让三件以前做不到的事成为可能：
+annot 由此支持三项可验证操作：
 
 1. **判断"这个 skill 对吗"**：图上的每个框都能点回原文，不用再猜是哪个段落教的。
 2. **判断"我改对了吗"**：`annot check` 拿新文件重新算哈希，报"哪几个节点漂移了、移到哪一行"。没改的节点一定不报——这是它可信的唯一理由。
@@ -63,29 +75,40 @@ node.anchor = { heading: [...], start: 65, end: 72, sha: "a3f1…" }
 
 ## 快速开始
 
+从源码运行：
+
+```bash
+git clone https://github.com/tataCrayon/annot.git
+cd annot
+npm link
+annot workbench open
+```
+
+工作台默认扫描 Codex、Claude Code、Cursor、GitHub Copilot、Gemini CLI、OpenCode、DSH 与 ZCode 的常见 Skill 目录。也可以先用 CLI 标注单个 Skill：
+
 ```bash
 # 标注一个 skill（默认写到 <skill>/.annot/<name>/）
-node src/cli.ts annotate path/to/my-skill
+annot annotate path/to/my-skill
 
 # 得到两个文件
 #   .annot/my-skill/my-skill.flow.json   ← 数据，可进 git
 #   .annot/my-skill/my-skill.html        ← 单文件，双击即开，无网络无依赖
 
 # 改完 SKILL.md 后检查锚点是否还成立
-node src/cli.ts check path/to/my-skill/.annot/my-skill/my-skill.flow.json
+annot check path/to/my-skill/.annot/my-skill/my-skill.flow.json
 ```
 
 `check` 的退出码就是结论：`0` 全部同步，`1` 有漂移（并逐条列出 `node id`、`moved 65 → 67` 或 `broken`）。
 
 ```bash
 # 列出某个根目录下所有 skill（按 name 去重，低 rank 优先）
-node src/cli.ts list ~/.agents/skills ./.agents/skills
+annot list ~/.agents/skills ./.agents/skills
 
 # 批量体检：哪些 skill 抽得不好
-node src/cli.ts audit ~/.agents/skills ./skills --limit 15
+annot audit ~/.agents/skills ./skills --limit 15
 
 # 让 agent 改某个节点：交出精确行范围 + 原文 + 约束
-node src/cli.ts context .annot/my-skill/my-skill.flow.json n-state
+annot context .annot/my-skill/my-skill.flow.json n-state
 ```
 
 `audit` 是产品命令而不是开发工具——"我的哪个 skill 渲染得不对"本来就是这个工具要回答的问题。
@@ -113,7 +136,7 @@ node src/cli.ts context .annot/my-skill/my-skill.flow.json n-state
 
 ## 从自然语言到评估闭环
 
-网页负责把意图整理成受控任务，Codex 或 DSH 宿主负责执行。这样既可以从自然语言开始，也不必让页面偷偷写入源文件。
+网页负责把意图整理成受控任务，Codex、DSH 或 ZCode 宿主负责执行。这样既可以从自然语言开始，也不必让页面偷偷写入源文件。
 
 ### 修改一个节点
 
@@ -146,7 +169,7 @@ node src/cli.ts review path/to/my-skill --json
 
 评估表单可多选触发、完成度、产出质量、恢复、安全、成本、延迟和一致性；可以不选指标、不写描述，此时生成保守的全量计划。没有真实运行结果时，页面和任务都只写“效果未测”。`annot audit` 的结构分只说明抽取结果是否容易核验，不能冒充 Skill 效果分。
 
-本机网页提供 `POST /api/brief`，请求体为 `{ name, node?, mode, intent, metrics? }`，其中 `mode` 为 `rewrite`、`analyze` 或 `evaluate`。分析和评估返回 AI 任务，网页只读；响应声明 `writesSource: false`，请求体上限 16 KiB。
+本机网页提供 `POST /api/brief`，请求体为 `{ name, source?, node?, mode, intent, metrics? }`，其中 `source` 可为 `user` 或 `system`，`mode` 为 `rewrite`、`analyze` 或 `evaluate`。分析和评估返回 AI 任务，网页只读；响应声明 `writesSource: false`，请求体上限 16 KiB。
 
 ---
 
@@ -422,7 +445,7 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 
 左侧「扫描目录」位于 Skill 列表上方，可勾选默认工具目录并追加自定义路径。「应用并扫描」会写入 `.annot/web-roots.json`，重启后继续使用；「恢复默认」清除临时范围选择。配置路径可用 `--root-config <file>` 覆盖，QA 或多实例运行应各自使用独立文件。
 
-打开终端打印的 `http://127.0.0.1:8787` 地址；按 Ctrl+C 停止。网页与 DSH 共用同一套布局和审计代码，只读扫描到的 Skill；唯一写入是网页自身的扫描范围配置，不提供 Skill 源文件写入接口。AI 提案缓存目录可用 `--analysis-dir` 覆盖。
+打开终端打印的 `http://127.0.0.1:8787` 地址；按 Ctrl+C 停止。网页与 DSH 共用同一套布局和审计代码，Skill 源文件保持只读；工作台只写自己的扫描范围配置、版本快照和评估报告，不提供 Skill 源文件写入接口。AI 提案缓存目录可用 `--analysis-dir` 覆盖。
 
 工作台顶部分成三个入口：
 
@@ -437,14 +460,14 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 
 ## UI 设计规范
 
-工作台与独立动作图共同遵守 [`docs/ui-design-system.md`](docs/ui-design-system.md)：4–64px 间距阶梯、16px 卡片内边距、24px 动作卡间隔、44px 最小控件高度，以及三栏、响应式、图谱几何和缩放验收。UI 改动必须同时通过单元测试、浏览器截图和几何检查。
+工作台与独立动作图共同遵守 [`docs/ui-design-system.md`](docs/ui-design-system.md)：4–64px 间距阶梯、动作摘要至少 40px 内缩、卡片 16px 文字内边距、紧凑时序行、44px 最小控件高度，以及三栏、响应式、图谱几何和缩放验收。UI 改动必须同时通过单元测试、浏览器截图和几何检查。
 
 ## 设计约束（故意不做的事）
 
 - **CLI 不内置模型**。AI 分析由 Codex/DSH 或现有 harness 执行；CLI 固定提示词、验证提案、记录源 hash 与提案 hash，使图变化可以追溯到源文件或分析版本。
 - **不自研模型或 eval 执行引擎**。可以生成配对评估计划、规定产物和优化回环，但真实 baseline/Skill 运行继续交给宿主或现成 harness；没有运行结果就不生成效果分。
 - **不做 skill CRUD**。DSH 已有 `@linxin666/dsh-client-ui-skill-explorer` 干这个。
-- **不自动启动后台服务**。CLI 按需调用；`annot web` 是用户显式启动、按 Ctrl+C 关闭的可选本地网页服务。
+- **不默认启动后台服务**。CLI 按需调用；只有显式执行 `annot workbench open` 才会启动或复用本地工作台，`annot web` 仍可通过 Ctrl+C 停止。
 - **不自己实现浏览器协议栈**。用 Node 内置 `WebSocket` 讲 CDP，不引入 Puppeteer/Playwright 那样的几百 MB 依赖——但也不假装"截图=验过"。
 
 哪些能力是借的、哪些是原创的，逐条对照在 [`docs/03-prior-art-and-borrowed-capabilities.md`](docs/03-prior-art-and-borrowed-capabilities.md)。
