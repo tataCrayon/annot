@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
       flow: 'api/annot/flow',
       context: 'api/annot/context',
       audit: 'api/annot/audit',
+      workbench: 'api/annot/workbench/open',
     };
 
     const NODE_COLORS = {
@@ -26,6 +27,7 @@ window.__ModuleLoader__.load({
       gate: { fill: '#fef2f2', stroke: '#dc2626', text: '#450a0a' },
       artifact: { fill: '#ecfdf5', stroke: '#059669', text: '#022c22' },
       external: { fill: '#f0f9ff', stroke: '#0284c7', text: '#082f49' },
+      note: { fill: '#f7f7f8', stroke: '#77727f', text: '#2d2a32' },
     };
     /** Type to its CSS custom property; every colour lives in the token block. */
     const TYPE_VAR = {
@@ -34,8 +36,12 @@ window.__ModuleLoader__.load({
       gate: '--annot-gate',
       artifact: '--annot-artifact',
       external: '--annot-external',
+      note: '--annot-note',
     };
-    const TYPE_LABEL = { stage: '阶段', decision: '判定', gate: '门禁', artifact: '产物', external: '外部调用' };
+    const TYPE_LABEL = { stage: '关键动作', decision: '判断', gate: '门禁', artifact: '产物', external: '外部调用', note: '说明' };
+    const NOTE_ROLE_LABEL = { principle: '原则', rationale: '理由', definition: '定义', trigger: '触发', context: '背景', risk: '风险', example: '示例', reference: '参考' };
+    const ASSOCIATION_LABEL = { supports: '支持动作', constrains: '约束门禁', informs: '辅助判断', 'explains-output': '解释产物' };
+    const SCOPE_LABEL = { node: '已关联', skill: '全局说明', unbound: '孤立说明' };
     /* Orthogonal to the type: who performs the step. */
     const LANE_LABEL = { reader: '你', tool: '工具', model: '模型', output: '产物' };
     /** Node flags are machine names; a reviewer reads the consequence. */
@@ -48,8 +54,8 @@ window.__ModuleLoader__.load({
       broken: '锚点找不到原文',
     };
 
-    async function request(url) {
-      const response = await fetch(url, { headers: { accept: 'application/json' } });
+    async function request(url, options = {}) {
+      const response = await fetch(url, { ...options, headers: { accept: 'application/json', ...(options.headers || {}) } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const error = new Error(payload.error || `HTTP ${response.status}`);
@@ -75,12 +81,13 @@ window.__ModuleLoader__.load({
         /* Node type inks are fixed so the graph reads the same in light and
            dark; the plate, ink and accent follow the host theme. */
         --annot-stage: #3b36a8; --annot-decision: #9a5b06; --annot-gate: #a8201a;
-        --annot-artifact: #14603f; --annot-external: #12557a;
+        --annot-artifact: #14603f; --annot-external: #12557a; --annot-note: #655f70;
         display:flex; flex-direction:column; height:100%; min-height:0; font-size:13px; line-height:1.5; color: var(--dsw-alias-label-primary);
       }
       .annot-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
       .annot-bar h1 { font-size:14px; margin:0; font-weight:650; }
       .annot-pill { font-size:11.5px; padding:1px 8px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); white-space:nowrap; }
+      .annot-pill:disabled { cursor: wait; opacity: .65; }
       .annot-pill b { color: var(--dsw-alias-label-primary); font-weight:650; }
       .annot-pill.warn { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); }
       .annot-pill.on { border-color: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); background: var(--dsw-alias-button-primary-fill); }
@@ -115,6 +122,8 @@ window.__ModuleLoader__.load({
       .annot-node:hover rect.annot-card { stroke-width:1.5; }
       .annot-node:active rect.annot-card { stroke-width:2.5; }
       .annot-node.sel rect.annot-card { stroke-width:2; }
+      .annot-assoc { fill:none; stroke:var(--dsw-alias-label-tertiary); stroke-width:1.1; stroke-dasharray:2 4; opacity:.72; }
+      .annot-assoc-title { fill:var(--dsw-alias-label-tertiary); font-size:9.5px; }
       .annot-node text { pointer-events:none; }
       .annot-mono { font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
       .annot-stepnum { fill: var(--dsw-alias-label-tertiary); font-family: ui-monospace, Consolas, monospace; font-size:11px; font-variant-numeric: tabular-nums; }
@@ -183,18 +192,27 @@ window.__ModuleLoader__.load({
         svg.setAttribute('height', String(layout.height));
         svg.setAttribute('viewBox', `0 0 ${layout.width} ${layout.height}`);
 
-        // Step numbers in the left gutter, one rule per depth band. A 19-step
-        // pipeline is only followable if the eye has a number to hold onto.
+        // Action numbers in the left gutter. Notes and supporting facts still
+        // get bands for readability, but numbering them as workflow steps made
+        // background prose look executable.
+        const actionBands = new Map();
+        for (const node of layout.nodes) {
+          if (node.type === 'stage' && !actionBands.has(node.band)) {
+            actionBands.set(node.band, actionBands.size + 1);
+          }
+        }
         for (const band of layout.bands || []) {
           svg.appendChild(el('line', { class: 'annot-steprule', x1: 26, y1: band.y - 7, x2: layout.width - 26, y2: band.y - 7 }));
+          const actionOrder = actionBands.get(band.index);
+          if (actionOrder === undefined) continue;
           const num = el('text', { class: 'annot-stepnum', x: 26, y: band.y + 4 });
-          num.textContent = String(band.index + 1).padStart(2, '0');
+          num.textContent = String(actionOrder).padStart(2, '0');
           svg.appendChild(num);
         }
 
-        for (const id of ['arrow-seq', 'arrow-branch']) {
+        for (const id of ['arrow-seq', 'arrow-branch', 'arrow-assoc']) {
           const marker = el('marker', { id, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' });
-          marker.appendChild(el('path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: id === 'arrow-branch' ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)' }));
+          marker.appendChild(el('path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: id === 'arrow-branch' ? 'var(--dsw-alias-state-warn-primary)' : id === 'arrow-assoc' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)' }));
           svg.appendChild(marker);
         }
 
@@ -262,6 +280,14 @@ window.__ModuleLoader__.load({
           svg.appendChild(el('path', attrs));
         }
 
+        for (const association of layout.associations || []) {
+          svg.appendChild(el('path', {
+            class: 'annot-assoc',
+            d: association.d,
+            'marker-end': 'url(#arrow-assoc)',
+          }));
+        }
+
         for (const node of layout.nodes) {
           const group = el('g', {
             class: `annot-node${selected === node.id ? ' sel' : ''}`,
@@ -285,11 +311,15 @@ window.__ModuleLoader__.load({
           // The plate: host-background card, ink hairline, and a 3px top rule
           // carrying the type. Six pastel fills made every node look equally
           // urgent, which is the opposite of what a flow is for.
-          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: cardH, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
-          group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: 3, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
+          const clipId = `annot-card-clip-${node.id}`;
+          const clip = el('clipPath', { id: clipId });
+          clip.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: cardH, rx: 14, ry: 14 }));
+          group.appendChild(clip);
+          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: cardH, rx: 14, ry: 14, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
+          group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: 3, 'clip-path': `url(#${clipId})`, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
 
           const typeWord = el('text', { x: 12, y: 17, 'font-size': 10.5, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` });
-          typeWord.textContent = TYPE_LABEL[node.type] || node.type;
+          typeWord.textContent = node.type === 'note' && NOTE_ROLE_LABEL[node.noteRole] ? `${TYPE_LABEL.note} · ${NOTE_ROLE_LABEL[node.noteRole]}` : TYPE_LABEL[node.type] || node.type;
           group.appendChild(typeWord);
 
           // The layout already wrapped the label, so the panel cannot disagree
@@ -320,10 +350,6 @@ window.__ModuleLoader__.load({
             group.appendChild(text);
           });
 
-          const meta = el('text', { class: 'annot-mono', x: 12, y: cardH - 10, 'font-size': 10.5, fill: 'var(--dsw-alias-label-tertiary)' });
-          meta.textContent = `L${node.anchor.start}-${node.anchor.end} · ${Math.round(node.confidence * 100)}%`;
-          group.appendChild(meta);
-
           // Who performs the step. The type rule above says what kind of thing
           // this is; the lane says whether the reader, a command or the model
           // does it. Both are on the card because the two questions differ.
@@ -340,12 +366,22 @@ window.__ModuleLoader__.load({
           // corner belongs to the lane word.
           const branches = Array.isArray(node.branches) ? node.branches : [];
           const open = branches.filter((branch) => !branch.to).length;
-          if (open > 0) {
-            const badge = el('text', { class: 'annot-mono', x: node.w - 12, y: cardH - 10, 'font-size': 10.5, 'text-anchor': 'end', fill: 'var(--dsw-alias-state-warn-primary)' });
-            badge.textContent = `${open} 未落地`;
+          const outgoing = (layout.associations || []).filter((association) => association.from === node.id);
+          const noteStatus = node.type === 'note'
+            ? node.associationScope === 'unbound' ? '孤立说明' : node.associationScope === 'skill' ? '全局说明' : outgoing.length ? ASSOCIATION_LABEL[outgoing[0].relation] : ''
+            : '';
+          const lowConfidence = (node.flags || []).indexOf('low-confidence') !== -1;
+          const rightStatus = [noteStatus, open > 0 ? `${open} 未落地` : '', lowConfidence ? '低置信' : ''].filter(Boolean).join(' · ');
+          const meta = el('text', { class: 'annot-mono', x: 12, y: cardH - 10, 'font-size': 10.5, fill: 'var(--dsw-alias-label-tertiary)' });
+          const metaText = `L${node.anchor.start}-${node.anchor.end} · ${Math.round(node.confidence * 100)}%`;
+          meta.textContent = metaText.length > 11 ? `${metaText.slice(0, 10)}…` : metaText;
+          group.appendChild(meta);
+          if (rightStatus) {
+            const badge = el('text', { class: 'annot-mono', x: node.w - 12, y: cardH - 10, 'font-size': 10.5, 'text-anchor': 'end', fill: node.associationScope === 'unbound' ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' });
+            badge.textContent = rightStatus.length > 8 ? `${rightStatus.slice(0, 7)}…` : rightStatus;
             group.appendChild(badge);
           }
-          if (node.confidence < 0.6) {
+          if (lowConfidence && !rightStatus) {
             group.appendChild(el('circle', { cx: node.w - 13, cy: cardH - 14, r: 3.2, fill: 'var(--dsw-alias-state-warn-primary)', 'data-role': 'low-confidence' }));
           }
 
@@ -377,7 +413,7 @@ window.__ModuleLoader__.load({
         }
       }, [layout, selected, onSelect, svgRef]);
 
-      return h('div', null, h(Legend), h('svg', { ref: svgRef, role: 'img', 'aria-label': doc ? `${doc.skill} 的流程图` : '流程图' }));
+      return h('div', null, h(Legend), h('svg', { ref: svgRef, role: 'img', 'aria-label': doc ? `${doc.skill} 的动作图` : '动作图' }));
     }
 
     /** The artifact has a legend; the panel promises the same reading without one. */
@@ -388,6 +424,7 @@ window.__ModuleLoader__.load({
         Object.entries(TYPE_LABEL).map(([type, label]) =>
           h('span', { key: type }, h('i', { style: { background: (NODE_COLORS[type] || NODE_COLORS.stage).stroke } }), label),
         ),
+        h('span', { key: 'association' }, h('i', { style: { width: 14, height: 0, borderTop: '1px dashed #94a3b8', borderRadius: 0, background: 'transparent' } }), '说明关联'),
         h('span', null, h('i', { style: { background: '#f59e0b', borderRadius: '50%' } }), '置信度低'),
       );
     }
@@ -409,6 +446,8 @@ window.__ModuleLoader__.load({
       /** The edit context for the selected node, fetched on demand. */
       const [edit, setEdit] = React.useState(null);
       const [editPending, setEditPending] = React.useState(false);
+      const [workbenchOpening, setWorkbenchOpening] = React.useState(false);
+      const [workbenchMessage, setWorkbenchMessage] = React.useState('');
 
       // Every request that can be superseded carries a ticket. A response whose
       // ticket is no longer the latest is dropped, which is the only way a slow
@@ -541,6 +580,19 @@ window.__ModuleLoader__.load({
         }
       }, [current, selected]);
 
+      const openWorkbench = React.useCallback(async () => {
+        setWorkbenchOpening(true);
+        setWorkbenchMessage('');
+        try {
+          const payload = await request(API.workbench, { method: 'POST' });
+          setWorkbenchMessage(payload.opened ? '已在浏览器打开工作台。' : `工作台地址：${payload.url}`);
+        } catch (failure) {
+          setWorkbenchMessage(failure.message);
+        } finally {
+          setWorkbenchOpening(false);
+        }
+      }, []);
+
       React.useEffect(() => {
         // Changing node invalidates the slice; leaving the previous node's lines
         // on screen while a new request is in flight is how a user copies the
@@ -578,6 +630,9 @@ window.__ModuleLoader__.load({
         edit,
         editPending,
         loadEdit,
+        workbenchOpening,
+        workbenchMessage,
+        openWorkbench,
       };
     }
 
@@ -585,9 +640,20 @@ window.__ModuleLoader__.load({
       if (!doc) return h('p', { className: 'annot-muted' }, '从右边的列表里搜一个 skill，点它出图。');
       if (!nodeId) return h('p', { className: 'annot-muted' }, '点一个方块查看它的原文与锚点。');
       const node = doc.nodes.find((candidate) => candidate.id === nodeId);
-      if (!node) return h('p', { className: 'annot-muted' }, '节点已不在当前图里。');
+      if (!node) return h('p', { className: 'annot-muted' }, '卡片已不在当前动作图里。');
       const branches = Array.isArray(node.branches) ? node.branches : [];
-      const rank = Array.isArray(doc.nodes) ? doc.nodes.findIndex((candidate) => candidate.id === node.id) : -1;
+      const stageNodes = Array.isArray(doc.nodes) ? doc.nodes.filter((candidate) => candidate.type === 'stage') : [];
+      const rank = stageNodes.findIndex((candidate) => candidate.id === node.id);
+      const related = (doc.associations || []).filter((association) => association.from === node.id);
+      const associationDetail = related.length
+        ? h('ul', { className: 'annot-list' }, related.map((association, index) => {
+            const target = doc.nodes.find((candidate) => candidate.id === association.to);
+            const confidence = Math.round((association.confidence || 0) * 100);
+            return h('li', { key: index, style: { padding: '2px 0' } }, `${ASSOCIATION_LABEL[association.relation] || association.relation} → ${target ? target.label : association.to} · L${target ? target.anchor.start : '?'} · ${association.evidence} · ${confidence}%`);
+          }))
+        : node.associationScope === 'skill'
+          ? h('p', { className: 'annot-muted' }, '作用于整个 Skill')
+          : h('p', { className: 'annot-muted' }, '孤立说明：没有可证实的目标');
       const flags = (Array.isArray(node.flags) ? node.flags : []).map((flag) =>
         h(
           'span',
@@ -598,12 +664,14 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         null,
-        h('h2', null, rank >= 0 ? `第 ${rank + 1} 步` : '节点'),
+        h('h2', null, rank >= 0 ? `关键动作 ${rank + 1}` : node.type === 'note' && NOTE_ROLE_LABEL[node.noteRole] ? `${TYPE_LABEL.note} · ${NOTE_ROLE_LABEL[node.noteRole]}` : TYPE_LABEL[node.type] || '卡片'),
         h(
           'dl',
           { className: 'annot-kv' },
           h('dt', null, '类型'),
-          h('dd', null, TYPE_LABEL[node.type] || node.type),
+          h('dd', null, node.type === 'note' && NOTE_ROLE_LABEL[node.noteRole] ? `${TYPE_LABEL.note} · ${NOTE_ROLE_LABEL[node.noteRole]}` : TYPE_LABEL[node.type] || node.type),
+          node.type === 'note' ? h('dt', null, '作用范围') : null,
+          node.type === 'note' ? h('dd', null, SCOPE_LABEL[node.associationScope] || '未分析') : null,
           h('dt', null, '置信度'),
           h('dd', null, `${Math.round(node.confidence * 100)}%${node.confidence < 0.6 ? '（偏低）' : ''}`),
           h('dt', null, '锚点'),
@@ -618,6 +686,8 @@ window.__ModuleLoader__.load({
           flags.length ? h('dt', null, '标记') : null,
           flags.length ? h('dd', null, flags) : null,
         ),
+        node.type === 'note' ? h('h2', null, '关联目标') : null,
+        node.type === 'note' ? associationDetail : null,
         h('h2', null, '分支'),
         branches.length === 0
           ? h('p', { className: 'annot-muted' }, '无')
@@ -653,7 +723,7 @@ window.__ModuleLoader__.load({
           'div',
           null,
           h('h2', null, '自然语言改'),
-          h('p', { className: 'annot-muted' }, '给出这个节点的精确行范围与改写约束，交给你的 agent 去改。'),
+          h('p', { className: 'annot-muted' }, '给出这张卡片的精确行范围与改写约束，交给你的 agent 去改。'),
           h('button', { className: 'annot-pill', style: { cursor: 'pointer' }, onClick: onLoad }, '生成改写上下文'),
         );
       }
@@ -726,7 +796,7 @@ window.__ModuleLoader__.load({
               h(
                 'tr',
                 null,
-                ['分数', '节点', '低置信', '未绑定', '空标签', 'skill'].map((label) => h('th', { key: label }, label)),
+                ['分数', '卡片', '低置信', '未绑定', '空标签', '孤立%', 'skill'].map((label) => h('th', { key: label }, label)),
               ),
             ),
             h(
@@ -935,8 +1005,9 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'annot-bar' },
           h('h1', null, doc ? doc.skill : 'annot'),
-          doc ? h('span', { className: 'annot-pill' }, h('b', null, doc.nodes.length), ' 节点') : null,
-          doc ? h('span', { className: 'annot-pill' }, h('b', null, doc.edges.length), ' 边') : null,
+          doc ? h('span', { className: 'annot-pill' }, h('b', null, doc.stats.byType.stage), ' 关键动作') : null,
+          doc ? h('span', { className: 'annot-pill' }, h('b', null, doc.stats.byType.note ?? 0), ' 说明') : null,
+          doc ? h('span', { className: 'annot-pill' }, h('b', null, doc.edges.length), ' 连接') : null,
           doc
             ? h(
                 'span',
@@ -952,7 +1023,21 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'annot-pill', title: `源文件 sha256 ${doc.source.sha}\n生成于 ${doc.source.generated_at}` }, 'sha ', doc.source.sha.slice(0, 10))
             : null,
           generatedLabel ? h('span', { className: 'annot-pill', title: doc.source.generated_at }, '读于 ', generatedLabel) : null,
+          state.workbenchMessage
+            ? h('span', { className: 'annot-pill', title: state.workbenchMessage, style: { maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' } }, state.workbenchMessage)
+            : null,
           h('span', { style: { flex: 1 } }),
+          h(
+            'button',
+            {
+              className: 'annot-pill',
+              style: { cursor: state.workbenchOpening ? 'progress' : 'pointer' },
+              disabled: state.workbenchOpening,
+              title: '启动或复用独立网页工作台，并在默认浏览器中打开',
+              onClick: () => state.openWorkbench(),
+            },
+            state.workbenchOpening ? '打开中…' : '浏览器打开',
+          ),
           h(
             'button',
             {
@@ -977,7 +1062,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'annot-tabs' },
-          h('button', { className: state.tab === 'graph' ? 'on' : '', 'aria-pressed': state.tab === 'graph' ? 'true' : 'false', onClick: () => state.setTab('graph') }, '流程图'),
+          h('button', { className: state.tab === 'graph' ? 'on' : '', 'aria-pressed': state.tab === 'graph' ? 'true' : 'false', onClick: () => state.setTab('graph') }, '动作图'),
           h('button', { className: state.tab === 'audit' ? 'on' : '', 'aria-pressed': state.tab === 'audit' ? 'true' : 'false', onClick: () => state.setTab('audit') }, '审计'),
         ),
         state.error ? h('p', { className: 'annot-error', style: { padding: '8px 14px', margin: 0 } }, state.error) : null,

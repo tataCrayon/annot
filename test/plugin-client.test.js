@@ -118,6 +118,12 @@ test('every host route is documented-relative, never root-absolute', () => {
   }
 });
 
+test('the native panel can launch the standalone workbench through one host route', () => {
+  assert.match(SOURCE, /workbench: 'api\/annot\/workbench\/open'/);
+  assert.match(SOURCE, /浏览器打开/);
+  assert.match(SOURCE, /request\(API\.workbench, \{ method: 'POST' \}\)/);
+});
+
 test('the panel never assumes a node has branches or headings', () => {
   // Defensive shape: a doc from an older schema may lack either array, and the
   // detail pane must not throw on it. The accesses are guarded by `|| []`.

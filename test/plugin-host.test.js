@@ -13,6 +13,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { ROUTES, apply } from '../plugin/index.js';
@@ -82,7 +85,7 @@ async function call(route, req) {
 test('applying registers every documented route under one effect', () => {
   const { routes, effectName } = mount();
   assert.deepEqual(routes.map((r) => r.path).sort(), Object.values(ROUTES).sort());
-  assert.equal(routes.length, 8, 'status, selfcheck, report, list, search, flow, context, audit');
+  assert.equal(routes.length, 9, 'status, selfcheck, report, workbench, list, search, flow, context, audit');
   assert.match(effectName, /annot/i, 'the effect must be named so a failing mount is traceable');
 });
 
@@ -183,6 +186,33 @@ test('a non-GET method is rejected with 405', async () => {
   const { routes } = mount();
   const res = await call(routes[0], fakeReq(routes[0].path, { method: 'POST' }));
   assert.equal(res.status, 405);
+});
+
+test('the workbench route is POST-only and reports a missing CLI', async () => {
+  const { routes } = mount({ cli: 'definitely-not-a-real-annot-binary' });
+  const route = routes.find((r) => r.path === ROUTES.workbench);
+  const get = await call(route, fakeReq(route.path));
+  const post = await call(route, fakeReq(route.path, { method: 'POST' }));
+
+  assert.equal(get.status, 405);
+  assert.equal(post.status, 503);
+  assert.match(post.body.error, /cannot run|not found|ENOENT/i);
+});
+
+test('the workbench route returns the CLI launch result without duplicating its logic', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'annot-workbench-host-'));
+  const cli = join(workspace, 'fake-cli.mjs');
+  await writeFile(cli, `console.log(JSON.stringify({ running: true, managed: true, started: false, opened: true, url: 'http://127.0.0.1:8787', port: 8787 }));\n`, 'utf8');
+  try {
+    const { routes } = mount({ cli, cliNodeArgs: [] });
+    const route = routes.find((r) => r.path === ROUTES.workbench);
+    const res = await call(route, fakeReq(route.path, { method: 'POST' }));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.url, 'http://127.0.0.1:8787');
+    assert.equal(res.body.opened, true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test('status reports the roots it will scan and whether the CLI exists', async () => {

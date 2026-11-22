@@ -1,0 +1,23 @@
+{
+  "name": "annot-local",
+  "owner": {
+    "name": "annot maintainers"
+  },
+  "plugins": [
+    {
+      "name": "annot",
+      "source": {
+        "source": "local",
+        "path": "./plugins/annot"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools",
+      "interface": {
+        "displayName": "Annot"
+      }
+    }
+  ]
+}

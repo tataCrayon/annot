@@ -31,7 +31,7 @@ test('every declared export points at a file that exists', () => {
 test('the modules a reader would import are all exported', () => {
   // Named explicitly: a missing key here is the bug, so the list may not be
   // derived from `exports` itself.
-  const required = ['./parse', './flow', './drift', './audit', './search', './context', './manifest', './render', './visual', './browser'];
+  const required = ['./parse', './flow', './drift', './audit', './search', './context', './manifest', './render', './visual', './browser', './web', './workbench'];
   for (const subpath of required) {
     assert.ok(pkg.exports[subpath], `exports is missing ${subpath}`);
   }
@@ -57,6 +57,7 @@ test('the package ships every directory its entry points live in', () => {
   for (const target of Object.values(pkg.exports)) {
     assert.ok(covered(target.slice(2)), `${target} is exported but not covered by files: ${JSON.stringify(pkg.files)}`);
   }
+  assert.ok(pkg.files.includes('web'), 'the published package must include the local web assets');
 });
 
 test('the sandbox and probe directories are never publishable', () => {

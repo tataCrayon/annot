@@ -1,11 +1,48 @@
-﻿# annot
+# annot
 
-**给任意 Skill 做标注。** 把一份 `SKILL.md` 变成带源码锚点的流程图，能看、能审、能被自然语言改。
+**Inspect, evaluate, and optimize Agent Skills across tools.**<br>
+把 `SKILL.md` 拆成带源码锚点的动作图，汇总整库问题，生成宿主 Agent 可执行的优化任务，并保存可比较的版本快照。
 
-> 状态：v0.1（可用。`annotate` / `check` / `list` / `search` / `audit` / `context` / `verify` / `render` 八个命令，157 个测试 + 7 段沙箱验收全绿）
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.18-2f6f4e)](https://nodejs.org/)
+[![Tests](https://img.shields.io/badge/tests-242%20passing-2f6f4e)](#隔离测试)
+[![Local first](https://img.shields.io/badge/data-local--first-9f451f)](#设计约束故意不做的事)
+[![License](https://img.shields.io/badge/license-MIT-4b5550)](LICENSE)
+
+> 一个 Skill 引擎，多种宿主外壳。Codex、DSH、ZCode 与独立网页共享同一套扫描、分析、校验和评估代码。
+
+## Screenshots
+
+![annot system skill action graph](docs/assets/system-skill-graph.png)
+
+| 整库评估 | 版本管理 |
+|---|---|
+| ![annot library assessment](docs/assets/library-report.png) | ![annot version management](docs/assets/version-management.png) |
+
+| 动作链 | 宿主优化任务 |
+|---|---|
+| ![annot action timeline](docs/assets/action-timeline.png) | ![annot optimization handoff](docs/assets/optimization-task.png) |
+
+## 多工具支持
+
+| 工具 | 接入方式 | 当前能力 |
+|---|---|---|
+| **Codex** | [Codex 插件](plugins/annot)、3 个 Skill、独立 Reviewer Agent | 浏览动作图、检查规范、生成分析与评估任务、打开统一工作台 |
+| **DeepSeek Harness (DSH)** | [原生 DSH bundle](plugin/)，侧栏面板 + 主区页面 | 共用 annot CLI、定位节点、生成改写上下文、打开独立工作台 |
+| **ZCode** | [ZCode 插件](plugins/annot-zcode) 与本地 marketplace | 3 个 Skill、`open-workbench` 命令、统一工作台入口 |
+| **Claude Code / Cursor / GitHub Copilot / Gemini CLI / OpenCode** | 默认扫描对应项目与用户 Skill 目录 | 自动发现、搜索、动作图、规范检查与整库报告 |
+| **独立网页** | `annot workbench open` | 本机运行、只读扫描、整库报告、版本快照与宿主任务 |
+
+## 核心能力
+
+- **源码锚定**：每张动作卡绑定精确行范围与行哈希，图可以追溯到原文。
+- **AI-first 分析**：AI 判断动作、门禁、判断、产物与说明关系；CLI 负责契约校验和确定性渲染。
+- **规范与评估分离**：加载规范、本地引用、孤立说明和结构问题可直接检查；行为效果必须运行 baseline 与 Skill 对照后才计分。
+- **整库评估**：一次汇总全部 Skill 的阻断和建议问题，支持筛选及 Markdown/JSON 报告导出。
+- **优化任务回环**：自动建立优化前快照，生成带报告路径、问题清单和验收要求的 Codex/DSH/ZCode 任务。
+- **版本管理**：保留 Skill 原文与内容哈希，按内容指纹合并重复记录，比较新增、修改和移除项。
+- **本地优先**：工作台只监听 `127.0.0.1`，不上传 Skill 内容，也不在浏览器里直接写 Skill 源文件。
 
 ---
-
 ## 为什么不是又一个"Skill 可视化"
 
 现有的 Skill 可视化工具（见 [skillscope](https://github.com/silvesterdivas/skillscope)）从 markdown 里**猜** triggers 和 branches。猜出来的图不可复现、不可 diff、改完不知道哪里变了。
@@ -74,20 +111,88 @@ node src/cli.ts context .annot/my-skill/my-skill.flow.json n-state
 - 这是门禁节点：保留命令式语气与"必须/禁止"这类硬约束词，不要改写成建议。
 ```
 
+## 从自然语言到评估闭环
+
+网页负责把意图整理成受控任务，Codex 或 DSH 宿主负责执行。这样既可以从自然语言开始，也不必让页面偷偷写入源文件。
+
+### 修改一个节点
+
+1. 在工作台打开 Skill，点标题旁的「自然语言修改」直达当前节点；也可点图上的节点，或从「节点上下文」换一个节点。
+2. 用一句话写意图，例如“先检查未提交改动，发现问题就停下来询问”。
+3. 点「生成修改任务」，复制完整任务交给 Codex 或 DSH。
+4. 宿主先保存 flow 快照，只改锚定行；修改后运行 `annot check`，返回 diff、锚点变化和未解决风险。
+
+任务会带上原文、行号、哈希、范围外禁止修改等约束，所以“自然语言修改”不会退化成整篇重写。
+
+### 规范检查
+
+“规范与评估”页签会检查当前 Skill 的名称、Description、正文结构、渐进披露、本地引用和维护性。`annot review` 提供同一套确定性结果：
+
+```bash
+node src/cli.ts review path/to/my-skill
+node src/cli.ts review path/to/my-skill --json
+```
+
+有阻断项时命令退出 `1`，只有建议项时退出 `0`。这部分回答“Skill 是否符合规范、是否容易被加载”，不回答“Skill 是否有效”。行为效果仍要通过下一节的隔离对照实验验证。
+
+### 评估并优化整个 Skill
+
+点 Skill 标题旁的「评估与优化」，写清楚要验证的能力，再复制生成的计划。计划要求：
+
+- 同一模型、同一工具权限、隔离会话下的 baseline 与加载 Skill 对照；
+- 主路径、分支/边界、接近触发但不该触发的反例和普通任务反例；
+- 每个变体至少重复 2 次，记录可判定断言、通过率、成本、延迟和方差；
+- 先定位失败簇，再映射到具体节点；每轮只验证一个改动，全量回归，目标改善且负例不回归才保留。
+
+评估表单可多选触发、完成度、产出质量、恢复、安全、成本、延迟和一致性；可以不选指标、不写描述，此时生成保守的全量计划。没有真实运行结果时，页面和任务都只写“效果未测”。`annot audit` 的结构分只说明抽取结果是否容易核验，不能冒充 Skill 效果分。
+
+本机网页提供 `POST /api/brief`，请求体为 `{ name, node?, mode, intent, metrics? }`，其中 `mode` 为 `rewrite`、`analyze` 或 `evaluate`。分析和评估返回 AI 任务，网页只读；响应声明 `writesSource: false`，请求体上限 16 KiB。
+
 ---
 
-## 它怎么读一个 Skill
+## AI-first 语义分析
 
-四层，每层只做一件事，**全部确定性**——不调模型，所以同一份文件永远得到同一张图。
+节点类型、动作概括、门禁、产物、分支和说明关系由 AI 阅读整份 Skill 后判断。CLI 不内置模型提供商，只负责生成带行号的 AI 任务、验证 AI 提案、计算布局和渲染产物。
+
+```bash
+# 1. 生成包含逐行源码和 JSON 契约的分析任务
+annot ai-prompt path/to/my-skill --out .annot/analyses/my-skill.analysis-task.md
+
+# 2. 宿主 AI 输出 analysis.json 后，验证并渲染
+annot annotate path/to/my-skill \
+  --analysis .annot/analyses/my-skill.analysis.json \
+  --out .annot/my-skill-graph
+```
+
+AI 提案中的每个节点必须给出 `start/end` 和逐字一致的 `quote`。CLI 会拒绝源文件 hash 不匹配、引文不一致、重复 id、悬空边和自相矛盾的说明范围。确定性层只守证据边界，不替 AI 做语义分类。完整架构见 [`docs/ai-first-analysis.md`](docs/ai-first-analysis.md)。
+
+本地网页默认从 `.annot/analyses/<skill>.analysis.json` 读取已验证提案，并以 `AI 语义分析` 标记；没有提案时才显示标为 `规则草案` 的兼容预览。网页的「AI 重建动作图」按钮直接生成可复制给 Codex/DSH 的分析任务。
+
+### 兼容的规则草案
+
+不带 `--analysis` 的 `annotate` 仍运行旧规则引擎，为历史图、fixture 和迁移提供回归基线。它的结果标为 `source.method: "rules"`，只是**规则草案**，不作为新的语义分析结论。
 
 | 层 | 做什么 | 不做什么 |
 |---|---|---|
 | `parse` | 切 frontmatter、标题、连续单元；保留 1-based 绝对行号 | 不猜语义 |
 | `segment` | 把围栏里的流水线（`STATE — …` / `A → B → C`）拆成一节点一行 | 不拆普通代码块 |
-| `flow` | 给每个单元定类型（阶段/判定/门禁/产物/外部调用）+ 置信度 + 分支 | 不假装确定 |
+| `analysis` | 读取 AI 提案；只验证锚点、枚举、引用和说明范围 | 不用关键词表重新解释语义 |
 | `drift` | 按行哈希判死/活，就近重定位，报 `moved`/`broken` | 不静默重解析 |
 
-类型判定是有规则的猜测，所以每个节点都带 `confidence` 和 `flags`。低于 60% 的进"待确认"清单——**机器不确定的地方，图上看得见**。
+AI 分析路径保留每个节点的 `confidence`、判断理由、说明角色和关系证据；低置信与孤立说明继续进入待确认清单。旧规则草案复用同一渲染契约，并通过 `source.method` 明确标记来源。
+
+说明不只有“写了什么”，还要回答“它影响什么”。annot 把说明角色与执行节点分开建模，并用非执行的灰色点线表示关联：
+
+```text
+说明 --支持动作------> 关键动作
+说明 --约束门禁------> 门禁
+说明 --辅助判断------> 判断
+说明 --解释产物------> 产物
+说明 --全局说明------> 整个 Skill
+说明 --无目标--------> 孤立说明
+```
+
+工作台显示说明覆盖率与孤立文本率。孤立文本率是**静态可追踪性指标**：它帮助发现“这段文字既不在流程上，又没有被声明为全局原则”的情况，但不能冒充 Skill 行为效果分。完整定义与阈值见 [`docs/note-association-and-orphan-text.md`](docs/note-association-and-orphan-text.md)。
 
 ---
 
@@ -101,7 +206,9 @@ node src/cli.ts context .annot/my-skill/my-skill.flow.json n-state
   "nodes": [
     { "anchor": { "start": 65 }, "type": "gate", "rename": "人工确认" },
     { "label": "附录", "ignore": true },
-    { "anchor": { "start": 61 }, "branches": [{ "when": "守住" }, { "when": "改良" }, { "when": "替换" }] }
+    { "anchor": { "start": 61 }, "branches": [{ "when": "守住" }, { "when": "改良" }, { "when": "替换" }] },
+    { "anchor": { "start": 24 }, "associatesWith": { "toStart": 12, "relation": "supports" } },
+    { "anchor": { "start": 30 }, "associationScope": "skill" }
   ]
 }
 ```
@@ -109,6 +216,7 @@ node src/cli.ts context .annot/my-skill/my-skill.flow.json n-state
 - `anchor.start` 或 `label` 二选一定位
 - `ignore` 直接把它从图里去掉
 - `confirm` 把置信度提到 1，标记为人工确认
+- `associatesWith` 把说明绑定到动作、门禁、判断或产物；`associationScope` 可强制标为 `skill` 或 `unbound`
 - 覆盖会写进 `source: "sidecar"`，可追溯到"这是人改的，不是猜的"
 
 ---
@@ -176,9 +284,9 @@ annot verify .annot/my-skill/my-skill.flow.json
 
 ## 图怎么读、怎么动
 
-左列是**你要按顺序做的事**，同一行的右两列是这一步**靠什么判断**（门禁 / 外部调用）和**交出什么**（产物）。一行的高度由这一行最高的卡决定，主路径因此是一根直的竖脊；表头自带计数，某一列在本文件里没有卡就写"本文件没有这一类"，不画空轨道。没有侧卡的文档退回单列——三列里两列空着是骗人的。
+没有分支边的线性流程中，左列是**你要按顺序做的事**，同一行的右两列是这一步**靠什么判断**（门禁 / 外部调用）和**交出什么**（产物）。没有侧卡的文档退回单列。有已绑定分支边时改用分层 DAG：互斥目标同层显示，布局不把它们排成连续步骤。分支自动绑定要求结果类表格的首列值与后续标题完全一致；行内枚举仍标为未落地。
 
-实测 `release-checklist`：34 节点排成 26 行，`980 × 3711`（4.1 屏），列分配 `核心 25 / 门禁 6 / 产物 3`。
+实测 `release-checklist`：34 节点排成 26 行，`980 × 3711`（4.1 屏），列分配 `核心 25 / 门禁 6 / 产物 3`。结果表分支由 `test/fixtures/branch-table.md` 独立验证；`grill-method` 只有行内枚举，仍是 3 个未绑定分支。
 
 三件事是**静态优先**的，动效只在读的时候帮一把：
 
@@ -222,6 +330,10 @@ annot verify .annot/my-skill/my-skill.flow.json
 | `annot context <flow.json> <node-id>` | 交出编辑所需的精确切片与约束 |
 | `annot verify <flow.json\|html>` | 真浏览器验收；exit 0/1/2（2 = 跳过） |
 | `annot render <flow.json>` | 只重渲染 HTML |
+| `annot workbench open\|status\|stop` | 后台启动或复用 8787 工作台、检查状态、停止受管进程，并可直接打开浏览器 |
+| `annot web [root...] [--port <port>] [--snapshot-dir <dir>] [--report-dir <dir>]` | 启动只读本地 Skill 工作台；省略 roots 时扫描常见 AI 工具目录，并配置本地版本快照与报告目录 |
+
+`annot workbench open` 是可重复调用的宿主入口：健康实例直接复用，没有实例时后台启动，PID/实例 ID 写入 `.annot/workbench.json`，日志写入 `.annot/workbench-8787.log`。`--no-open` 适合自动化和服务器环境；`status` 和 `stop` 只操作实例 ID 对得上的受管进程。
 
 `annotate` 会额外写一个 `annotation.json`：记录源文件路径（**相对清单自身**，所以产物目录可以整个搬走）、生成时的源哈希、以及每个产物的字节数与 sha256。`check` 靠它精确找回源文件——早先版本靠 `../SKILL.md` 猜，用 `--out` 就一定猜错。
 
@@ -250,6 +362,8 @@ dsh plugin --profile <profile> add <repo>/plugin
 
 装上之后：侧边栏出现 **Annot** → 搜索框打 `审计` → 点结果 → 右边看到同一张图、同一份锚点、同一份置信度。
 
+面板把“自然语言修改”继续交回当前 DSH 会话：选中节点后生成带行范围和约束的上下文，复制给会话里的 Agent 执行并运行 `annot check`。插件不内置第二个模型，也不把 Skill 修改变成网页写接口。
+
 它**不是第二套实现**：面板每一次点击都会 exec 一次同一个 `annot` 命令行，所以两边不可能给出不同的图。这是"一个引擎、多个外壳"能被验证的唯一形式。路由：
 
 | 路由 | 作用 |
@@ -262,21 +376,75 @@ dsh plugin --profile <profile> add <repo>/plugin
 | `GET api/annot/flow?path=<SKILL.md>` | 一张图（含服务端算好的布局） |
 | `GET api/annot/context?path=<skill>&node=<id>` | 这个节点的精确行范围 + 原文 + 改写约束（面板里「生成改写上下文」用的就是它） |
 | `GET api/annot/audit?limit=<n>` | 整库审计（总分是完整的，只有表格被截断） |
+| `POST api/annot/workbench/open` | 启动或复用独立网页工作台，并在默认浏览器打开 |
 
-八条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 写进用户 skill 树的那条路**不在路由里**；唯一的写是写到面板自己的临时目录，因为出图必须先有 flow.json。
+九条路由都限制在 loopback（含 `X-Forwarded-For` 一律拒绝、`sec-fetch-site: cross-site` 拒绝、foreign `Origin` 拒绝）。`?path=` 只接受**当前扫描结果里出现过的** `SKILL.md`——否则这个路由就退化成一个任意文件读取原语。`annotate` 写进用户 skill 树的那条路**不在路由里**；路由只使用面板临时目录，`workbench` 还会写入自己的 PID、日志和扫描范围配置。
 
-`plugin/` 有 30 个测试 + 6 个面板渲染测试，包括"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"、"报告路由不接受跨站伪造"、"面板首帧不抛且列得出 skill"。
+`plugin/` 有 41 个测试，其中 6 个直接渲染面板树；覆盖"路由真的驱动了真 CLI"、"扫描范围外的路径必须 422"、"被取代的响应不能覆盖更新的"、"报告路由不接受跨站伪造"、"工作台入口只接受 loopback POST"和"面板首帧不抛且列得出 skill"。
 
 `selfcheck` 的存在理由：面板"没出现"有三种完全不同的原因，而它们在宿主侧长得一模一样。`reports` 为空 = bundle 没到页面；有 `apply-enter` 无 `seat-available` = 宿主没声明席位；有 `registered` = 注册成功；有 `panel-mounted` = 有人真的打开过。`composed` 字段直读宿主的 `clientModules` 注册表，给出这个包是否已编入 `__DSH_BOOT__` 以及确切的 bundle URL。
 
+## Codex 插件与独立本地网页
+
+Codex 插件位于 `plugins/annot/`，仓库 marketplace 清单位于 `.agents/plugins/marketplace.json`。portable manifest 与根目录 `skills/` 按 Codex 插件布局自动发现；插件声明需要桌面本地执行，并调用本机 `annot` CLI。安装 CLI 需要 Node.js ≥22.18，并让 `annot` 命令可从 PATH 调用。从源码仓库运行 `npm link` 后，可用 `annot version` 确认安装。添加本地 marketplace 后重启 Codex，再从 Plugins Directory 选择并安装 Annot。
+
+插件还声明 `agents/annot-reviewer.md` 这个独立 Skill Reviewer Agent。它的工作仍在 Codex 对话中完成：网页或 DSH 面板负责圈定事实与改写范围，Agent 负责理解、修改和验收，三者共用同一套 CLI 证据。
+
+ZCode 适配包位于 `plugins/annot-zcode/`，使用 `.zcode-plugin/plugin.json` 与 `skills/` 布局，携带同一组三个 Skill。本地测试市场清单为 `plugins/marketplace.json`，市场 ID 是 `dev-vibeskill-9378cedf`，插件 ID 是 `annot-zcode@dev-vibeskill-9378cedf`。在 ZCode 的「插件市场 → 添加插件市场」中选择 `D:\Projects\flp\vibeskill\plugins`，再从该市场安装 Annot。源码修改后需刷新市场并更新已安装插件，ZCode 不会热加载本地插件。
+
+网页工作台可以单独在浏览器运行：
+
+```bash
+# 在 annot 仓库中启动；省略 roots 时扫描常见 AI 工具目录
+npm run web
+
+# 或只浏览明确指定的根目录
+npm run web -- "D:\Users\me\.agents\skills" --port 8787
+```
+
+省略 roots 时，只扫描下面 18 个封闭候选根，不会遍历整个磁盘：
+
+| 工具 | 项目根 | 用户根 | 状态 |
+|---|---|---|---|
+| Shared Agents | `.agents/skills` | `~/.agents/skills` | Codex 官方 |
+| Claude Code | `.claude/skills` | `$CLAUDE_CONFIG_DIR/skills` 或 `~/.claude/skills` | 当前目录约定 |
+| Codex | `.codex/skills` | `$CODEX_HOME/skills` 或 `~/.codex/skills` | compatibility |
+| Cursor | `.cursor/skills` | `~/.cursor/skills` | 当前目录约定 |
+| GitHub Copilot | `.github/skills` | `~/.copilot/skills` | 当前目录约定 |
+| Gemini CLI | `.gemini/skills` | `~/.gemini/skills` | legacy |
+| OpenCode | `.opencode/skills` | `~/.config/opencode/skills` | 当前目录约定 |
+| DSH | `.dsh/skills` | `~/.dsh/skills` | 当前目录约定 |
+| ZCode | `.zcode/skills` | `~/.zcode/skills` | ZCode 官方目录 |
+
+每个候选根只在自己内部递归到第 5 层（根为第 0 层），支持 `skills/category/name/SKILL.md`。目录一旦含 `SKILL.md` 就作为 Skill 读取并停止向下；realpath 与 visited 集合阻止符号链接循环。缺失或不可读的根会在页面「当前范围」中明确列出，一个坏子目录不会遮住同根的其他 Skill。
+
+显式传入 roots 时完全替代默认集合。同名 Skill 按 annot 自定的 rank 取最低值：项目共享 Agents 100、项目宿主镜像 110–170、custom 300、用户共享 Agents 400、用户宿主镜像 410–470、bundled 600；同 rank 时按路径稳定决策。
+
+左侧「扫描目录」位于 Skill 列表上方，可勾选默认工具目录并追加自定义路径。「应用并扫描」会写入 `.annot/web-roots.json`，重启后继续使用；「恢复默认」清除临时范围选择。配置路径可用 `--root-config <file>` 覆盖，QA 或多实例运行应各自使用独立文件。
+
+打开终端打印的 `http://127.0.0.1:8787` 地址；按 Ctrl+C 停止。网页与 DSH 共用同一套布局和审计代码，只读扫描到的 Skill；唯一写入是网页自身的扫描范围配置，不提供 Skill 源文件写入接口。AI 提案缓存目录可用 `--analysis-dir` 覆盖。
+
+工作台顶部分成三个入口：
+
+- **Skill 库**：保留单个 Skill 的动作图、卡片上下文、自然语言修改和评估。
+- **annot 系统 Skill**：左侧单独展示插件自带的 `annot`、`annot-analysis`、`annot-evaluation`；使用 `source=system` 独立读取，不会混入用户 Skill 库，也不受同名用户 Skill 影响。
+- **整库评估**：用一次请求汇总全部 Skill 的发现、静态规范、资源引用、孤立说明和抽取结构问题。报告可下载为 Markdown 或 JSON；行为效果在真实对照运行前始终显示“未测”。
+- **版本管理**：把当前 Skill 库保存为本地快照，相同内容指纹会合并为一个版本并保留记录次数；可选择任意两次快照比较新增、修改或移除的 Skill，并生成宿主恢复任务。
+
+「生成整库优化任务」会先自动创建 `.annot/snapshots/` 基线快照，再把机器可读报告写入 `.annot/reports/`，最后生成可复制的宿主任务。任务要求宿主先检查未提交改动、按阻断→建议顺序优化、运行 `annot review`/`annot verify`，再创建新快照对比。工作台仍不调用模型，也不直接写 Skill 源文件。
+
 ---
+
+## UI 设计规范
+
+工作台与独立动作图共同遵守 [`docs/ui-design-system.md`](docs/ui-design-system.md)：4–64px 间距阶梯、16px 卡片内边距、24px 动作卡间隔、44px 最小控件高度，以及三栏、响应式、图谱几何和缩放验收。UI 改动必须同时通过单元测试、浏览器截图和几何检查。
 
 ## 设计约束（故意不做的事）
 
-- **不调模型**。一旦依赖模型，"图变了" 就再也分不清是"文件变了"还是"模型这次心情不同"。
-- **不做 eval 引擎**。要用 [skill-eval-harness](https://github.com/adewale/skill-eval-harness) 那种配对因果增益，接它，别在这重写。
+- **CLI 不内置模型**。AI 分析由 Codex/DSH 或现有 harness 执行；CLI 固定提示词、验证提案、记录源 hash 与提案 hash，使图变化可以追溯到源文件或分析版本。
+- **不自研模型或 eval 执行引擎**。可以生成配对评估计划、规定产物和优化回环，但真实 baseline/Skill 运行继续交给宿主或现成 harness；没有运行结果就不生成效果分。
 - **不做 skill CRUD**。DSH 已有 `@linxin666/dsh-client-ui-skill-explorer` 干这个。
-- **不常驻进程**。CLI 是被调用的，不是被守护的。
+- **不自动启动后台服务**。CLI 按需调用；`annot web` 是用户显式启动、按 Ctrl+C 关闭的可选本地网页服务。
 - **不自己实现浏览器协议栈**。用 Node 内置 `WebSocket` 讲 CDP，不引入 Puppeteer/Playwright 那样的几百 MB 依赖——但也不假装"截图=验过"。
 
 哪些能力是借的、哪些是原创的，逐条对照在 [`docs/03-prior-art-and-borrowed-capabilities.md`](docs/03-prior-art-and-borrowed-capabilities.md)。
@@ -286,7 +454,7 @@ dsh plugin --profile <profile> add <repo>/plugin
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 157 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 242 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

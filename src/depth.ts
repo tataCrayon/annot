@@ -1,10 +1,9 @@
 /**
- * How many sequence steps deep a node sits.
+ * How many dependency edges deep a node sits.
  *
- * Longest path, not shortest: a node should sit below everything that can reach
- * it, otherwise two edges into the same band cross the card. The relaxation is
- * capped at `nodes.length` passes, so a cycle in the source degrades to a
- * stable answer instead of hanging the renderer.
+ * Longest path across sequence and branch edges, not shortest: a node should sit
+ * below everything that can reach it. Relaxation is capped at `nodes.length`
+ * passes, so a cycle degrades to a stable answer instead of hanging the renderer.
  *
  * Both `stats.maxDepth` and the layout read this. They used to disagree:
  * `maxDepth` was the heading nesting depth, so a 19-step pipeline reported 2
@@ -17,7 +16,6 @@ export function depthOf(nodes: FlowNode[], edges: FlowEdge[]): Map<string, numbe
   const preds = new Map<string, string[]>();
   for (const node of nodes) preds.set(node.id, []);
   for (const edge of edges) {
-    if (edge.kind !== 'sequence') continue;
     if (!preds.has(edge.to) || !preds.has(edge.from)) continue;
     preds.get(edge.to)?.push(edge.from);
   }
@@ -39,7 +37,7 @@ export function depthOf(nodes: FlowNode[], edges: FlowEdge[]): Map<string, numbe
   return depth;
 }
 
-/** The deepest band index, i.e. how many sequential steps the longest chain has. */
+/** The deepest band index, i.e. how many edges the longest path has. */
 export function maxDepthOf(nodes: FlowNode[], edges: FlowEdge[]): number {
   const depth = depthOf(nodes, edges);
   let max = 0;

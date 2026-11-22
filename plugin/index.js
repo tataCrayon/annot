@@ -1,8 +1,8 @@
 /**
  * Host half of annot-dsh.
  *
- * Read-only routes, and no engine code in this package at all: each route runs
- * the annot CLI and returns its JSON. That is the whole point of the
+ * Read-only analysis routes plus two bounded actions, and no engine code in
+ * this package at all: each route runs the annot CLI and returns its JSON. That is the whole point of the
  * "one engine, two shells" split — the DSH panel and `annot` on the command line
  * must not be able to disagree, and the cheapest way to guarantee that is to
  * have exactly one implementation.
@@ -13,8 +13,10 @@
  *     failing the boot, so the panel degrades to "not installed yet".
  *   - the write path (`annot annotate` writing into the user's skill tree) stays
  *     out of the routes on purpose: a web route that rewrites skills is a much
- *     larger permission than a panel that reads them. The one exception writes
- *     to a temp directory the panel owns, because drawing a graph requires it.
+ *     larger permission than a panel that reads them. Graph rendering writes
+ *     only to a temp directory the panel owns.
+ *   - `workbench open` starts the standalone loopback webpage through the same
+ *     CLI. It is an explicit POST action and never edits a Skill.
  *   - `context` is the read that makes editing possible: it returns a bounded
  *     slice plus the constraints, so the *user's own agent* does the rewrite. A
  *     panel that called a model itself would need a key, a bill and a second
@@ -27,9 +29,9 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const name = 'annot';
@@ -44,6 +46,7 @@ export const ROUTES = {
   flow: '/api/annot/flow',
   context: '/api/annot/context',
   audit: '/api/annot/audit',
+  workbench: '/api/annot/workbench/open',
 };
 
 function isIPv4Loopback(value) {
@@ -404,6 +407,20 @@ function makeRoutes(config, logger) {
     },
     {
       kind: 'exact',
+      path: ROUTES.workbench,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return;
+        const result = await runCli(cli, ['workbench', 'open'], { nodeArgs, cwd: config?.cwd });
+        if (!result.ok) {
+          logger.warn(result.message);
+          writeJson(res, 503, { error: result.message, cli });
+          return;
+        }
+        writeJson(res, 200, result.value);
+      },
+    },
+    {
+      kind: 'exact',
       path: ROUTES.report,      handler: async (req, res) => {
         // POST, not GET, and it accepts only loopback: this is the page telling
         // the Host what it did, and a cross-site POST would let any tab forge
@@ -500,7 +517,7 @@ function makeRoutes(config, logger) {
           });
           return;
         }
-        const result = await runCli(cli, ['annotate', wanted, '--out', tempOutFor(wanted)], { nodeArgs, cwd: config?.cwd });
+        const result = await runCli(cli, ['annotate', wanted, ...analysisArgs(wanted, config?.cwd), '--out', tempOutFor(wanted)], { nodeArgs, cwd: config?.cwd });
         if (!result.ok) {
           logger.warn(result.message);
           writeJson(res, 422, { error: result.message });
@@ -541,7 +558,7 @@ function makeRoutes(config, logger) {
         // and it is the only way to be sure the slice matches the graph the
         // panel is showing.
         const out = tempOutFor(wanted);
-        const annotated = await runCli(cli, ['annotate', wanted, '--out', out, '--json'], { nodeArgs, cwd: config?.cwd });
+        const annotated = await runCli(cli, ['annotate', wanted, ...analysisArgs(wanted, config?.cwd), '--out', out, '--json'], { nodeArgs, cwd: config?.cwd });
         if (!annotated.ok) {
           logger.warn(annotated.message);
           writeJson(res, 422, { error: annotated.message });
@@ -596,6 +613,15 @@ function makeRoutes(config, logger) {
 function tempOutFor(skill) {
   const safe = String(skill).replace(/[^\w.-]+/g, '-').slice(-80);
   return join(tmpdir(), 'annot-panel', safe);
+}
+
+/** Prefer a validated AI analysis cache; the rule engine is only the fallback. */
+function analysisArgs(skill, cwd) {
+  const path = String(skill);
+  const skillDir = path.endsWith('SKILL.md') ? dirname(path) : path;
+  const name = basename(skillDir);
+  const analysis = resolve(cwd ?? process.cwd(), '.annot', 'analyses', `${name}.analysis.json`);
+  return existsSync(analysis) ? ['--analysis', analysis] : [];
 }
 
 export function apply(ctx, config) {

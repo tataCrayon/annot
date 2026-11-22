@@ -73,8 +73,8 @@ function makeElement(tagName = 'div'): StubElement {
 }
 
 /** The two JSON payloads the page expects, plus a DOM just large enough. */
-async function runClient(): Promise<{ svg: StubElement; panel: StubElement; layout: Layout }> {
-  const text = await readFile(join(here, 'fixtures', 'grill-method.md'), 'utf8');
+async function runClient(source?: string): Promise<{ svg: StubElement; panel: StubElement; layout: Layout }> {
+  const text = source ?? await readFile(join(here, 'fixtures', 'grill-method.md'), 'utf8');
   const doc = buildFlow(parseSkill(text), text, { sourceFile: 'SKILL.md' });
   const html = renderHtml(doc);
 
@@ -117,6 +117,7 @@ async function runClient(): Promise<{ svg: StubElement; panel: StubElement; layo
   const context = vm.createContext({
     document,
     console,
+    window: { parent: { postMessage() {} }, addEventListener() {}, requestAnimationFrame() {} },
     JSON,
     Math,
     String,
@@ -155,17 +156,73 @@ test('a node group is emitted for every graph node', async () => {
     // `h` reserves the fork row as well, so the plate is `cardH` and the group
     // is taller only when an open arm hangs under it.
     assert.equal(card.attrs.height, String(placed.cardH));
+    assert.equal(card.attrs.rx, '16');
+    assert.equal(card.attrs.ry, '16');
     // Height grows with the number of label lines, so a fixed height would
     // clip the third line of a long label.
     assert.ok(Number(card.attrs.height) > 62, `card height ${card.attrs.height} cannot hold two label lines`);
   }
 });
 
-test('the detail panel answers "which step is this" and "which lines are they"', async () => {
+test('the detail panel opens on the first sourced action and shows its source lines', async () => {
   const { panel } = await runClient();
-  // The first thing a reader asks of a flow cell is where it sits in the
-  // sequence; the second is which source lines produced it.
-  assert.match(panel.innerHTML, /<h2>第 1 步<\/h2>/);
+  assert.match(panel.innerHTML, /<h2>关键动作 1<\/h2>/);
   assert.match(panel.innerHTML, /原文/);
   assert.match(panel.innerHTML, /行哈希/);
+});
+
+test('the page exposes every key action before the graph scrolls', async () => {
+  const text = await readFile(join(here, 'fixtures', 'grill-method.md'), 'utf8');
+  const doc = buildFlow(parseSkill(text), text, { sourceFile: 'SKILL.md' });
+  const html = renderHtml(doc);
+  const buttons = [...html.matchAll(/class="action-jump"/g)];
+  assert.match(html, /class="action-overview-kicker">SKILL ACTION FLOW</);
+  assert.match(html, /<h2[^>]*>这个 Skill 按什么顺序执行？<\/h2>/);
+  assert.match(html, /class="action-jump-copy"><strong>/);
+  assert.match(html, /class="action-jump-index"[^>]*>01</);
+  assert.match(html, /class="action-overview-copy"/);
+  assert.match(html, /class="action-overview-count">\d+ 个关键动作</);
+  assert.match(html, /\.action-overview-head \{\s+display: grid; grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(html, /\.action-chain::before \{/);
+  assert.match(html, /pane\.scrollIntoView\(\{ block: 'start'/);
+  assert.match(html, /--overview-inset: 48px/);
+  assert.match(html, /\.action-overview-inner \{ margin: 0 var\(--overview-inset\); padding-bottom: var\(--space-6\); \}/);
+  assert.match(html, /@media \(max-width: 1080px\) \{\s+:root \{ --overview-inset: 40px; \}/);
+  assert.equal(buttons.length, doc.stats.byType.stage);
+  assert.ok(buttons.length > 0, 'the action overview is empty on an actionable skill');
+});
+
+test('the detail panel numbers a sourced action as a key action', async () => {
+  const { panel } = await runClient('# S\n\n读取输入\n');
+  assert.match(panel.innerHTML, /<h2>关键动作 1<\/h2>/);
+});
+test('the standalone graph shows the Skill description verbatim', async () => {
+  const source = await readFile(join(here, 'fixtures', 'skill-with-frontmatter.md'), 'utf8');
+  const doc = buildFlow(parseSkill(source), source, { sourceFile: 'SKILL.md' });
+  const html = renderHtml(doc);
+  assert.match(html, /<p class="claim">A demo description used by the parser tests\.<\/p>/);
+});
+test('card copy keeps a consistent inset and source metadata gets a separate footer', async () => {
+  const { svg, layout } = await runClient();
+  const sized = new Map(layout.nodes.map((node) => [node.id, node]));
+  const groups = svg.children.filter((child) => child.tagName === 'g');
+  for (const group of groups) {
+    const placed = sized.get(group.attrs['data-id']);
+    assert.ok(placed);
+    const footerRule = group.children.find((child) =>
+      child.tagName === 'line' && child.attrs.y1 === String(placed.cardH - 32));
+    assert.ok(footerRule, `${group.attrs['data-id']} has no separated footer strip`);
+    const insetText = group.children.find((child) =>
+      child.tagName === 'text' && child.attrs.x === '16');
+    assert.ok(insetText, `${group.attrs['data-id']} has no text at the shared left inset`);
+  }
+});
+
+test('zoom uses inline geometry after the first interaction', async () => {
+  const source = await readFile(join(here, 'fixtures', 'grill-method.md'), 'utf8');
+  const doc = buildFlow(parseSkill(source), source, { sourceFile: 'SKILL.md' });
+  const html = renderHtml(doc, { embedded: true });
+  assert.match(html, /svg\.style\.width = targetWidth/);
+  assert.match(html, /svg\.style\.maxWidth = 'none'/);
+  assert.match(html, /pane\.scrollTop = 0;\s+pane\.scrollLeft = 0;/s);
 });

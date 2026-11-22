@@ -36,6 +36,8 @@ export interface ViewportCheck {
   overflowed: string[];
   /** Cards painted outside the SVG bounds. */
   outside: string[];
+  /** HTML summary blocks whose text, cards, or dividers lost their protected inset. */
+  tightSpacing: string[];
 }
 
 export interface RenderReport {
@@ -74,6 +76,7 @@ const PROBE = `(() => {
   const seen = new Map();
   const overflowed = [];
   const outside = [];
+  const tightSpacing = [];
 
   const bounds = svg ? svg.getBoundingClientRect() : null;
 
@@ -111,6 +114,40 @@ const PROBE = `(() => {
   for (const [id, count] of seen) if (count > 1) duplicated.push(id);
 
   const canvas = document.getElementById('canvas');
+  const overview = document.querySelector('.action-overview-grid');
+  if (overview) {
+    const overviewBox = overview.getBoundingClientRect();
+    const inner = document.querySelector('.action-overview-inner');
+    const innerBox = inner ? inner.getBoundingClientRect() : null;
+    const title = document.querySelector('#action-overview-title');
+    const paragraph = document.querySelector('.action-overview-head p');
+    const count = document.querySelector('.action-overview-count');
+    const status = document.querySelector('.action-overview-status');
+    const head = document.querySelector('.action-overview-head');
+    const chain = document.querySelector('.action-chain');
+    const titleBox = title ? title.getBoundingClientRect() : null;
+    const paragraphBox = paragraph ? paragraph.getBoundingClientRect() : null;
+    const countBox = count ? count.getBoundingClientRect() : null;
+    const statusBox = status ? status.getBoundingClientRect() : null;
+    const headBox = head ? head.getBoundingClientRect() : null;
+    const chainBox = chain ? chain.getBoundingClientRect() : null;
+    const style = inner ? getComputedStyle(inner) : null;
+    if (!style || parseFloat(style.marginLeft) < 40 || parseFloat(style.marginRight) < 40) tightSpacing.push('action-overview margin');
+    if (titleBox && overviewBox && titleBox.left - overviewBox.left < 40) tightSpacing.push('action-overview title inset');
+    if (titleBox && paragraphBox && paragraphBox.top - titleBox.bottom < 6) tightSpacing.push('action-overview title paragraph');
+    if (headBox && chainBox && chainBox.top - headBox.bottom < 20) tightSpacing.push('action-overview chain gap');
+    if (statusBox && innerBox && innerBox.right - statusBox.right < 0) tightSpacing.push('action-overview status inset');
+    if (statusBox && countBox && parseFloat(getComputedStyle(status).paddingRight) < 12) tightSpacing.push('action-overview count inset');
+    for (const button of document.querySelectorAll('.action-jump')) {
+      const copy = button.querySelector('.action-jump-copy');
+      const buttonBox = button.getBoundingClientRect();
+      const copyBox = copy ? copy.getBoundingClientRect() : null;
+      if (!copyBox || copyBox.left - buttonBox.left < 40 || button.clientHeight < 56 || button.scrollWidth > button.clientWidth + 1) {
+        tightSpacing.push('action-sequence text inset');
+        break;
+      }
+    }
+  }
 
   return {
     scrollWidth: doc.scrollWidth,
@@ -124,6 +161,7 @@ const PROBE = `(() => {
     duplicated,
     overflowed,
     outside,
+    tightSpacing,
   };
 })()`;
 
@@ -144,13 +182,13 @@ export async function renderCheck(htmlPath: string, doc: FlowDoc, options: { sho
 
   try {
     browser = await openBrowser();
-    await browser.navigate(pathToFileURL(resolve(htmlPath)).href);
-    report.problems = browser.problems();
-    report.network = browser.requests();
+    const targetUrl = pathToFileURL(resolve(htmlPath)).href;
 
     for (const [width, height] of VIEWPORTS) {
       browser.reset();
       await browser.setViewport(width, height);
+      await browser.navigate(`${targetUrl}?viewport=${width}x${height}`);
+      await browser.evaluate<void>('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
 
       const probe = await browser.evaluate<{
         scrollWidth: number;
@@ -164,6 +202,7 @@ export async function renderCheck(htmlPath: string, doc: FlowDoc, options: { sho
         duplicated: string[];
         overflowed: string[];
         outside: string[];
+        tightSpacing: string[];
       }>(PROBE);
 
       const check: ViewportCheck = {
@@ -178,6 +217,7 @@ export async function renderCheck(htmlPath: string, doc: FlowDoc, options: { sho
         nodesDrawn: probe.nodesDrawn,
         overflowed: probe.overflowed,
         outside: probe.outside,
+        tightSpacing: probe.tightSpacing,
       };
       report.viewports.push(check);
 
@@ -186,6 +226,7 @@ export async function renderCheck(htmlPath: string, doc: FlowDoc, options: { sho
       if (probe.duplicated.length > 0) report.problems.push(`${width}x${height}: node drawn twice (${probe.duplicated.join(', ')})`);
       if (probe.overflowed.length > 0) report.problems.push(`${width}x${height}: label overflows its card (${probe.overflowed.slice(0, 5).join(', ')})`);
       if (probe.outside.length > 0) report.problems.push(`${width}x${height}: card outside the canvas (${probe.outside.slice(0, 5).join(', ')})`);
+      if (probe.tightSpacing.length > 0) report.problems.push(`${width}x${height}: summary loses protected spacing (${probe.tightSpacing.join(', ')})`);
       if (probe.nodesDrawn !== doc.nodes.length) {
         report.problems.push(`${width}x${height}: drew ${probe.nodesDrawn} nodes, expected ${doc.nodes.length}`);
       }
@@ -193,6 +234,7 @@ export async function renderCheck(htmlPath: string, doc: FlowDoc, options: { sho
 
       if (options.shotDir) await capture(browser, options.shotDir, width, height);
     }
+    report.network = browser.requests();
   } catch (error) {
     if (error instanceof BrowserUnavailable) {
       return { ...report, status: 'skipped', reason: error.message };

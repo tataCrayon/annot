@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="在本机浏览 Skill 原文、关键动作和结构审计结果。">
+  <title>annot · Skill 图谱工作台</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="annot 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><strong>annot</strong><span>Skill 图谱工作台</span></span>
+    </a>
+    <p class="topbar-note">本地扫描，原文留在本机</p>
+    <span class="read-state" title="网页只生成受控任务，修改由 Codex 或 DSH 宿主执行">网页只读 · 宿主执行</span>
+  </header>
+
+  <nav class="workspace-nav" aria-label="主要工作区">
+    <button class="workspace-choice active" type="button" data-app-view="library" aria-pressed="true"><span>01</span><strong>Skill 库</strong><small>浏览与定位</small></button>
+    <button class="workspace-choice" type="button" data-app-view="report" aria-pressed="false"><span>02</span><strong>整库评估</strong><small>汇总全部问题</small></button>
+    <button class="workspace-choice" type="button" data-app-view="versions" aria-pressed="false"><span>03</span><strong>版本管理</strong><small>快照与差异</small></button>
+  </nav>
+  <div class="workspace">
+    <aside class="library" aria-label="Skill 库">
+      <div class="library-heading">
+        <div class="library-title-group">
+          <h1 class="library-title">Skill 库 <span id="skill-count" aria-live="polite">扫描中</span></h1>
+          <p id="result-summary" class="library-context" aria-live="polite">全部 Skill</p>
+        </div>
+        <button id="refresh" class="text-button" type="button">重新扫描</button>
+      </div>
+
+      <section class="system-skills" aria-labelledby="system-skill-title">
+        <div class="system-skills-heading">
+          <div>
+            <p class="section-eyebrow">Built-in system skills</p>
+            <h2 id="system-skill-title">annot 系统 Skill</h2>
+          </div>
+          <span id="system-skill-count">读取中</span>
+        </div>
+        <p>工作台自身使用的 Skill，与扫描到的用户 Skill 分开读取。</p>
+        <ul id="system-skill-list" class="system-skill-list" aria-label="annot 系统 Skill"></ul>
+      </section>
+      <details id="source-disclosure" class="source-disclosure" aria-label="扫描目录">
+        <summary>
+          <span class="disclosure-label">扫描目录</span>
+          <span id="root-count">0 个可读</span>
+          <span class="disclosure-action">配置</span>
+        </summary>
+        <form id="root-form" class="root-form">
+          <p class="root-form-note">勾选常用 AI 工具目录，或按行添加其他 Skill 根目录。配置写入本机项目的 <code>.annot/web-roots.json</code>。</p>
+          <ul id="root-list" class="root-list" aria-label="可配置的扫描目录"></ul>
+          <label class="custom-roots-label" for="custom-roots">自定义目录</label>
+          <textarea id="custom-roots" class="custom-roots" rows="3" spellcheck="false" placeholder="D:\work\skills&#10;~\my-agent\skills"></textarea>
+          <p id="root-form-error" class="root-form-error" role="alert" hidden></p>
+          <div class="root-form-actions">
+            <button id="save-roots" class="button primary compact" type="submit">应用并扫描</button>
+            <button id="reset-roots" class="button quiet compact" type="button">恢复默认</button>
+          </div>
+        </form>
+        <details id="skipped-summary" class="source-gaps" hidden>
+          <summary>还有 <span id="skipped-count">0</span> 个目录未发现</summary>
+          <div id="skipped-list" class="skipped-list"></div>
+        </details>
+      </details>
+
+      <div class="library-tools">
+        <div class="search-box">
+          <label class="sr-only" for="skill-search">搜索 Skill</label>
+          <span aria-hidden="true">⌕</span>
+          <input id="skill-search" type="search" placeholder="搜索名称、描述或正文" autocomplete="off">
+          <kbd>/</kbd>
+        </div>
+        <label class="body-search"><input id="search-body" type="checkbox">同时搜索正文</label>
+      </div>
+
+      <section class="skills-section" aria-label="Skill 扫描结果">
+        <div id="skill-state" class="state-note" role="status">正在读取目录…</div>
+        <ul id="skill-list" class="skill-list" aria-label="已发现的 Skill"></ul>
+      </section>
+      <p class="library-foot">支持 Codex、Claude Code、Cursor、Copilot、Gemini、OpenCode、DSH 与 ZCode 的常见配置目录。</p>
+    </aside>
+
+    <main id="main-content" class="main-content">
+      <section class="welcome" id="welcome" hidden>
+        <h2>选择一个 Skill，查看关键动作。</h2>
+        <p class="welcome-copy">从动作图定位一张卡片，用自然语言描述想改什么，网页会生成带行锚点和验收条件的宿主任务。想验证 Skill 是否真的有效，可生成 baseline 对照、失败定位与回退规则组成的评估优化计划；执行结果出来前，页面不会给出效果分。</p>
+      </section>
+
+      <section id="skill-view" hidden>
+        <header class="skill-heading">
+          <div class="skill-heading-copy">
+            <h2 id="skill-title">Skill</h2>
+            <p class="skill-field-label">Skill description</p>
+            <p id="skill-description" class="skill-description">正在读取 SKILL.md 的 description…</p>
+            <p class="skill-meta"><span id="graph-meta">等待流程数据</span><span id="graph-status">正在载入</span></p>
+          </div>
+          <div class="heading-actions">
+            <button id="reload-skill" class="button quiet" type="button">刷新此 Skill</button>
+            <button id="open-graph" class="button quiet" type="button">单独打开图</button>
+          </div>
+        </header>
+
+        <section class="skill-command-board" aria-label="Skill 操作区">
+          <button id="analyze-skill" class="command-card analyze" type="button">
+            <span class="command-kicker">分析</span>
+            <strong>AI 重建动作图</strong>
+            <span>让 AI 判断动作、门禁、产物的真实作用</span>
+          </button>
+          <button id="toggle-node-panel" class="command-card understand" type="button" aria-controls="node-drawer" aria-expanded="false">
+            <span class="command-kicker">理解</span>
+            <strong>查看卡片上下文</strong>
+            <span>定位原文、类型和锚点</span>
+          </button>
+          <button id="rewrite-skill" class="command-card modify" type="button">
+            <span class="command-kicker">修改</span>
+            <strong>自然语言修改</strong>
+            <span>只改锚定节点，生成宿主任务</span>
+          </button>
+          <button id="evaluate-skill" class="command-card evaluate" type="button">
+            <span class="command-kicker">评估</span>
+            <strong>评估与优化</strong>
+            <span>选择指标，或直接用自然语言描述</span>
+          </button>
+        </section>
+
+        <nav class="view-tabs" aria-label="工作区视图">
+          <button id="graph-tab" class="tab active" type="button" aria-pressed="true">动作图 <span id="graph-count">0</span></button>
+          <button id="standards-tab" class="tab" type="button" aria-pressed="false">规范与评估 <span id="standards-badge">待查</span></button>
+          <button id="audit-tab" class="tab" type="button" aria-pressed="false">整库审计 <span id="audit-count">0</span></button>
+          <span class="source-stamp">内容哈希 <code id="source-sha">等待生成</code></span>
+        </nav>
+
+        <section id="graph-view" class="graph-view" aria-label="Skill 动作图">
+          <div class="canvas-shell">
+            <div id="graph-loading" class="graph-loading" role="status">正在从 Skill 原文生成动作图…</div>
+            <iframe id="graph-frame" title="Skill 动作图" sandbox="allow-scripts" hidden></iframe>
+            <div id="graph-error" class="graph-error" role="alert" hidden></div>
+          </div>
+        </section>
+
+        <section id="standards-view" class="standards-view" hidden aria-label="Skill 规范检查与评估方法">
+          <div class="standards-grid">
+            <article class="standards-sheet" aria-labelledby="standards-title">
+              <header class="standards-heading">
+                <div>
+                  <p class="section-eyebrow">Skill standard review</p>
+                  <h2 id="standards-title">先核对能不能可靠加载和执行</h2>
+                  <p>检查 Agent Skills 规范、可发现性、正文结构、资源引用和维护性。它是静态检查，不冒充行为效果。</p>
+                </div>
+                <div id="standards-summary" class="readiness-card neutral" role="status">
+                  <strong>尚未检查</strong>
+                  <span>正在读取当前 Skill…</span>
+                </div>
+              </header>
+              <div id="standards-loading" class="standards-loading" role="status">正在检查当前 Skill…</div>
+              <div id="standards-groups" class="standard-groups"></div>
+            </article>
+
+            <aside class="evaluation-guide" aria-labelledby="evaluation-title">
+              <p class="section-eyebrow">Evaluation method</p>
+              <h2 id="evaluation-title">评估 Skill，不猜效果</h2>
+              <p id="evaluation-boundary" class="evaluation-boundary"></p>
+              <button id="standards-evaluate" class="button primary standards-cta" type="button">生成当前 Skill 的评估任务</button>
+              <ol id="evaluation-stages" class="evaluation-stages"></ol>
+              <h3>按问题接入成熟工具</h3>
+              <ul id="evaluation-tools" class="evaluation-tools"></ul>
+              <details class="method-sources">
+                <summary>方法来源</summary>
+                <ul id="evaluation-sources"></ul>
+              </details>
+            </aside>
+          </div>
+        </section>
+
+        <section id="audit-view" class="audit-view" hidden aria-label="整库审计结果">
+          <div class="audit-heading">
+            <div>
+              <h2>结构审计</h2>
+              <p>分数越高，图中越多卡片需要核对。它检查 annot 的抽取结果，不评价 Skill 的内容质量。</p>
+            </div>
+            <p id="audit-state" class="state-note">选择「整库审计」加载结果。</p>
+          </div>
+          <div class="table-wrap">
+            <table class="audit-table">
+              <thead><tr><th>Skill</th><th>结构分</th><th>卡片</th><th>待确认</th><th>未绑定分支</th><th>孤立说明</th><th>来源</th></tr></thead>
+              <tbody id="audit-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+      <section id="report-workspace" class="system-workspace" hidden aria-labelledby="report-title">
+        <header class="system-heading">
+          <div>
+            <p class="section-eyebrow">Library assessment</p>
+            <h2 id="report-title">整个 Skill 库，哪些问题最该先修？</h2>
+            <p>一次检查全部 Skill 的发现、静态规范、资源引用与抽取结构。行为效果必须运行后才计分，本报告会明确标记“未测”。</p>
+          </div>
+          <div class="system-status">
+            <span id="report-stamp">尚未生成</span>
+            <strong id="report-issue-total">— 个问题</strong>
+          </div>
+        </header>
+        <div class="report-metrics" aria-label="整库评估摘要">
+          <article><span>Skill 总数</span><strong id="report-skill-count">—</strong><small>当前扫描范围</small></article>
+          <article class="warn"><span>需复核</span><strong id="report-review-count">—</strong><small>可加载但有建议项</small></article>
+          <article class="danger"><span>阻断</span><strong id="report-blocked-count">—</strong><small>静态检查必须先修</small></article>
+          <article><span>孤立说明</span><strong id="report-orphan-count">—</strong><small>缺少可证实目标</small></article>
+          <article><span>行为效果</span><strong>未测</strong><small id="report-unmeasured-count">等待对照运行</small></article>
+        </div>
+        <div class="system-actions">
+          <button id="refresh-report" class="button quiet" type="button">刷新报告</button>
+          <button id="snapshot-from-report" class="button secondary" type="button">创建基线快照</button>
+          <button id="download-report" class="button secondary" type="button">下载评估报告</button>
+          <button id="download-report-json" class="button quiet" type="button">导出 JSON</button>
+          <button id="optimize-library" class="button primary" type="button">生成整库优化任务</button>
+        </div>
+        <p id="report-boundary" class="report-boundary">正在读取全部 Skill…</p>
+        <div id="report-loading" class="standards-loading" role="status">正在汇总整库问题…</div>
+        <div class="report-filter" role="group" aria-label="问题筛选">
+          <button class="filter-button active" type="button" data-report-filter="fail" aria-pressed="true">先看阻断 <span id="report-fail-count">0</span></button>
+          <button class="filter-button" type="button" data-report-filter="warn" aria-pressed="false">建议复核 <span id="report-warn-count">0</span></button>
+          <button class="filter-button" type="button" data-report-filter="all" aria-pressed="false">全部问题</button>
+        </div>
+        <div class="report-layout">
+          <section class="report-panel" aria-labelledby="report-issue-title">
+            <header class="report-panel-heading"><div><p class="section-eyebrow">Actionable issues</p><h3 id="report-issue-title">可执行问题</h3></div><span id="report-issue-summary">—</span></header>
+            <ul id="report-issue-list" class="report-issue-list"></ul>
+          </section>
+          <section class="report-panel" aria-labelledby="report-skill-title">
+            <header class="report-panel-heading"><div><p class="section-eyebrow">Skill ranking</p><h3 id="report-skill-title">按修复优先级</h3></div><span id="report-skill-summary">—</span></header>
+            <div class="report-skill-list" id="report-skill-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="versions-workspace" class="system-workspace" hidden aria-labelledby="versions-title">
+        <header class="system-heading">
+          <div>
+            <p class="section-eyebrow">Local version history</p>
+            <h2 id="versions-title">改动前后，Skill 库到底变了什么？</h2>
+            <p>版本快照保存在本机 <code>.annot/snapshots</code>，记录每个 Skill 的内容哈希与原文。创建快照不会修改 Skill，恢复操作仍交给宿主执行。</p>
+          </div>
+          <div class="system-status"><span>工作台只读</span><strong id="snapshot-count">0 个快照</strong></div>
+        </header>
+        <div class="snapshot-create">
+          <label for="snapshot-label">快照说明</label>
+          <input id="snapshot-label" type="text" maxlength="120" placeholder="例如：整库优化前、修复孤立说明后">
+          <button id="create-snapshot" class="button primary" type="button">创建当前快照</button>
+        </div>
+        <div class="version-compare">
+          <label>从 <select id="version-from"></select></label>
+          <label>到 <select id="version-to"></select></label>
+          <button id="compare-versions" class="button secondary" type="button">比较差异</button>
+          <button id="version-restore-task" class="button quiet" type="button" disabled>生成恢复任务</button>
+        </div>
+        <div class="report-layout versions-layout">
+          <section class="report-panel" aria-labelledby="version-list-title">
+            <header class="report-panel-heading"><div><p class="section-eyebrow">Timeline</p><h3 id="version-list-title">快照历史</h3></div><span id="version-current">尚未创建</span></header>
+            <ol id="version-list" class="version-list"></ol>
+          </section>
+          <section class="report-panel" aria-labelledby="version-diff-title">
+            <header class="report-panel-heading"><div><p class="section-eyebrow">Diff</p><h3 id="version-diff-title">版本差异</h3></div><span id="version-diff-summary">选择两个快照</span></header>
+            <div id="version-diff" class="version-diff"><p>创建至少两个快照后，可以查看新增、修改和移除的 Skill。</p></div>
+          </section>
+        </div>
+      </section>
+      <div id="global-error" class="global-error" role="alert" hidden></div>
+    </main>
+
+  <aside id="node-drawer" class="node-drawer" aria-label="卡片上下文与改进" aria-hidden="true" hidden>
+    <header class="drawer-heading">
+      <div>
+        <h2>定位、修改与评估</h2>
+      </div>
+      <span id="node-total" class="drawer-count">0 动作 / 0 卡片</span>
+      <button id="close-node-panel" class="icon-button" type="button" aria-label="收起工作侧栏">收起</button>
+    </header>
+    <label class="sr-only" for="node-search">筛选动作卡片</label>
+    <input id="node-search" class="node-search" type="search" placeholder="筛选动作、说明、类型或行号">
+    <ul id="node-list" class="node-list" aria-label="动作卡片"></ul>
+    <section id="node-detail" class="node-detail" aria-live="polite">
+      <p class="empty-detail">选择一张卡片查看来源，或从顶部打开效果评估。</p>
+    </section>
+  </aside>
+  </div>
+
+  <dialog id="brief-dialog" class="brief-dialog" aria-labelledby="brief-dialog-title">
+    <header class="brief-dialog-heading">
+      <div>
+        <p class="section-eyebrow">Agent handoff</p>
+        <h2 id="brief-dialog-title">任务输出</h2>
+        <p id="brief-dialog-meta">生成的任务会显示在这里。</p>
+      </div>
+      <button id="close-brief-dialog" class="icon-button" type="button" aria-label="关闭完整任务">关闭</button>
+    </header>
+    <pre id="brief-dialog-text" class="brief-dialog-text" tabindex="0"></pre>
+    <footer class="brief-dialog-actions">
+      <button id="copy-brief-dialog" class="button primary" type="button">复制完整任务</button>
+    </footer>
+  </dialog>
+
+
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

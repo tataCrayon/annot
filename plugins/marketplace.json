@@ -1,0 +1,18 @@
+{
+  "name": "dev-vibeskill-9378cedf",
+  "plugins": [
+    {
+      "name": "annot-zcode",
+      "source": "./annot-zcode",
+      "version": "0.1.0",
+      "description": "AI-first semantic analysis, source-linked action graphs, and evidence-backed evaluation for Agent Skills.",
+      "displayName": "Annot",
+      "displayName_i18n": {
+        "zh-CN": "Annot Skill 图谱"
+      },
+      "description_i18n": {
+        "zh-CN": "用 AI 分析、可视化和评估 Agent Skill，所有结论绑定源码锚点与证据。"
+      }
+    }
+  ]
+}

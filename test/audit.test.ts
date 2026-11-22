@@ -42,8 +42,9 @@ function doc(nodes: FlowNode[]): FlowDoc {
     schema_version: 1,
     nodes,
     edges: [],
+    associations: [],
     sections: [],
-    stats: { byType: { stage: nodes.length, decision: 0, gate: 0, artifact: 0, external: 0 }, lowConfidence: 0, stale: 0, maxDepth: 0 },
+    stats: { byType: { stage: nodes.length, decision: 0, gate: 0, artifact: 0, external: 0, note: 0 }, lowConfidence: 0, stale: 0, maxDepth: 0, noteCoverage: { total: 0, associated: 0, global: 0, unbound: 0, coverageRate: 1, orphanTextRate: 0 } },
   };
 }
 
@@ -87,13 +88,15 @@ test('over-splitting is penalised: one node per line is suspicious', () => {
 
 test('formatAudit lists worst first and states the clean count', () => {
   const rows: SkillAudit[] = [
-    { skill: 'good', file: 'g', nodes: 5, edges: 4, lowConfidence: 0, unresolvedBranches: 0, emptyText: 0, junkLabels: 0, density: 0.05, score: 0, byType: {}, sample: [] },
-    { skill: 'bad', file: 'b', nodes: 9, edges: 8, lowConfidence: 3, unresolvedBranches: 2, emptyText: 1, junkLabels: 1, density: 0.9, score: 23, byType: {}, sample: ['|---|'] },
+    { skill: 'good', file: 'g', nodes: 5, edges: 4, lowConfidence: 0, unresolvedBranches: 0, emptyText: 0, junkLabels: 0, density: 0.05, orphanNotes: 0, noteCount: 0, associatedNotes: 0, globalNotes: 0, orphanTextRate: 0, score: 0, byType: {}, sample: [] },
+    { skill: 'bad', file: 'b', nodes: 9, edges: 8, lowConfidence: 3, unresolvedBranches: 2, emptyText: 1, junkLabels: 1, density: 0.9, orphanNotes: 2, noteCount: 4, associatedNotes: 2, globalNotes: 0, orphanTextRate: 0.5, score: 23, byType: {}, sample: ['|---|'] },
   ];
   const out = formatAudit(rows, 10);
   assert.match(out, /2 个 skill，1 个零瑕疵/);
   assert.ok(out.indexOf('bad') < out.indexOf('good'), 'worst row must print first');
   assert.match(out, /样本：/);
+  assert.match(out, /orphan/);
+  assert.match(out, /50%/);
 });
 
 test('an empty library reports so instead of printing nothing', () => {

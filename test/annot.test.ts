@@ -50,7 +50,7 @@ test('every node anchor points at the exact source lines', async () => {
 
 test('a fenced pipeline becomes one node per stage, not one opaque box', async () => {
   const { doc } = await load('grill-method.md');
-  const stages = doc.nodes.filter((n) => /^(STATE|ATTACK|VERDICT|COMMIT)\b/.test(n.label));
+  const stages = doc.nodes.filter((n) => /^(STATE|ATTACK|VERDICT|COMMIT)\b/.test(n.raw));
   assert.equal(stages.length, 4, `expected 4 pipeline stages, got ${stages.map((s) => s.label).join(' | ')}`);
   for (const stage of stages) {
     assert.equal(stage.anchor.start, stage.anchor.end, `${stage.id} should own exactly one line`);
@@ -59,7 +59,7 @@ test('a fenced pipeline becomes one node per stage, not one opaque box', async (
 
 test('inline slash enumerations become branches', async () => {
   const { doc } = await load('grill-method.md');
-  const verdict = doc.nodes.find((n) => n.label.startsWith('VERDICT'));
+  const verdict = doc.nodes.find((n) => n.raw.startsWith('VERDICT'));
   assert.ok(verdict, 'VERDICT node missing');
   const arms = verdict.branches.map((b) => b.when);
   assert.deepEqual(arms, ['守住', '改良', '替换']);

@@ -52,7 +52,7 @@ function linearDoc(steps = 10) {
     nodes,
     edges: nodes.slice(1).map((n, i) => ({ from: nodes[i].id, to: n.id, kind: 'sequence' as const })),
     sections: [],
-    stats: { byType: { stage: steps, decision: 0, gate: 0, artifact: 0, external: 0 }, lowConfidence: 0, stale: 0, maxDepth: steps },
+    stats: { byType: { stage: steps, decision: 0, gate: 0, artifact: 0, external: 0, note: 0 }, lowConfidence: 0, stale: 0, maxDepth: steps },
   };
 }
 

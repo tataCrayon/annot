@@ -28,7 +28,14 @@ export interface SkillAudit {
   junkLabels: number;
   /** Nodes per source line: values far above 1 mean the file was over-split. */
   density: number;
-  /** Higher is worse. */
+  /** Explanatory prose that has no supported node or Skill-wide target. */
+  orphanNotes: number;
+  noteCount: number;
+  associatedNotes: number;
+  globalNotes: number;
+  /** orphanNotes / noteCount. A navigation signal, not a standalone quality score. */
+  orphanTextRate: number;
+  /** Higher is worse. This remains extraction readability, not content efficacy. */
   score: number;
   byType: Record<string, number>;
   sample: string[];
@@ -76,12 +83,18 @@ export function defectsOf(doc: FlowDoc, lines: number): Defects {
 
 export function auditFlow(doc: FlowDoc, lines: number): Omit<SkillAudit, 'skill' | 'file'> {
   const defects = defectsOf(doc, lines);
+  const coverage = doc.stats.noteCoverage ?? { total: 0, associated: 0, global: 0, unbound: 0, orphanTextRate: 0 };
   return {
     nodes: doc.nodes.length,
     edges: doc.edges.length,
     ...defects,
+    orphanNotes: coverage.unbound,
+    noteCount: coverage.total,
+    associatedNotes: coverage.associated,
+    globalNotes: coverage.global,
+    orphanTextRate: coverage.orphanTextRate,
     byType: countByType(doc),
-    sample: doc.nodes.slice(0, 3).map((n) => n.label.slice(0, 40)),
+    sample: doc.nodes.filter((n) => n.flags.includes('orphan-note')).slice(0, 3).map((n) => n.label.slice(0, 40)),
   };
 }
 
@@ -121,12 +134,12 @@ export function formatAudit(input: SkillAudit[], limit = 20): string {
   const clean = audits.filter((a) => a.score === 0).length;
   const out: string[] = [];
   out.push(`${audits.length} 个 skill，${clean} 个零瑕疵\n`);
-  out.push(`${'score'.padStart(6)}  ${'nodes'.padStart(5)}  ${'low'.padStart(3)}  ${'unres'.padStart(5)}  ${'junk'.padStart(4)}  skill`);
+  out.push(`${'score'.padStart(6)}  ${'nodes'.padStart(5)}  ${'low'.padStart(3)}  ${'unres'.padStart(5)}  ${'junk'.padStart(4)}  ${'orphan'.padStart(6)}  skill`);
 
   for (const a of audits.slice(0, limit)) {
     out.push(
       `${a.score.toFixed(1).padStart(6)}  ${String(a.nodes).padStart(5)}  ${String(a.lowConfidence).padStart(3)}  ` +
-        `${String(a.unresolvedBranches).padStart(5)}  ${String(a.junkLabels).padStart(4)}  ${a.skill}`,
+        `${String(a.unresolvedBranches).padStart(5)}  ${String(a.junkLabels).padStart(4)}  ${`${Math.round(a.orphanTextRate * 100)}%`.padStart(6)}  ${a.skill}`,
     );
     if (a.junkLabels > 0 || a.emptyText > 0) {
       out.push(`        样本：${a.sample.join(' | ')}`);

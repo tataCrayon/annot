@@ -45,8 +45,8 @@ test('the report names every viewport and never rounds a failure into a pass', (
     status: 'fail',
     artifact: '/tmp/x/challenge.html',
     viewports: [
-      { width: 1440, height: 900, scrollWidth: 1500, scrollHeight: 900, fitsHorizontally: false, graphFitsCanvas: true, canvasWidth: 1056, graphWidth: 900, nodesDrawn: 13, overflowed: [], outside: [] },
-      { width: 1920, height: 1080, scrollWidth: 1920, scrollHeight: 1080, fitsHorizontally: true, graphFitsCanvas: true, canvasWidth: 1536, graphWidth: 900, nodesDrawn: 13, overflowed: ['n-a'], outside: [] },
+      { width: 1440, height: 900, scrollWidth: 1500, scrollHeight: 900, fitsHorizontally: false, graphFitsCanvas: true, canvasWidth: 1056, graphWidth: 900, nodesDrawn: 13, overflowed: [], outside: [], tightSpacing: [] },
+      { width: 1920, height: 1080, scrollWidth: 1920, scrollHeight: 1080, fitsHorizontally: true, graphFitsCanvas: true, canvasWidth: 1536, graphWidth: 900, nodesDrawn: 13, overflowed: ['n-a'], outside: [], tightSpacing: [] },
     ],
     network: [],
     problems: ['1440x900: label overflows its card (n-a)'],

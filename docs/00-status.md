@@ -1,21 +1,22 @@
-# 状态：M1 完成、M2 面板可查、M3 实验通过（3/3）、三列管道图 + 悬停跟迹（2026-11-19）
+# 状态：共享引擎、DSH 插件、Codex 插件与本地网页
 
 > 写于 2026-11-19。给下一个接手的人（或下一个会话）看的第一份文件。
 > 这里只写"现在是什么"，不写"为什么"。为什么在 `docs/02`。
 
 ## 一句话
 
-`annot` 把一份 `SKILL.md` 读成带行锚点的流程图，输出单文件 HTML；改完文件用 `check` 判断图还对不对（exit 0/1）；用 `verify` 判断图画出来了没有（exit 0/1/2）；DSH 里有一个同源面板，能在图上看、能搜、能把"该改哪几行"交给你自己的 agent；`context` + 一次编辑 + `check` 这条闭环已用 3 条自然语言指令实测通过。
+`annot` 把一份 `SKILL.md` 读成带行锚点的流程图，输出单文件 HTML；改完文件用 `check` 判断图还对不对（exit 0/1）；用 `verify` 判断图画出来了没有（exit 0/1/2）。同一套引擎提供 CLI、DSH 面板、Codex Skill-only 插件、ZCode Skill 插件和可选的本地网页工作台。
 
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 157 个测试，全绿（104 TS + 53 JS）
+node --test test/*.test.ts test/*.test.js   # 240 个测试，全绿
 bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>
 node src/cli.ts check <flow.json>
 node src/cli.ts verify <flow.json> --shot <dir>
+node src/cli.ts web [root...] --port 8787   # 单独启动 loopback 网页，Ctrl+C 停止
 node sandbox/m3-experiment.ts                # M3 验收实验，见下
 ```
 
@@ -31,7 +32,9 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 | 整库 skill 数 / 零瑕疵数 | 77 / 18 | `annot audit ~/.agents/skills ~/.dsh/skills` |
 | 最烂的 skill | `feishu-task-creator` 21.0 | 同上 |
 | 未绑定分支总数 | 22（分布在 7 个 skill） | 同上；修规则前是 75 / 27 个 |
-| grill-method | 26 节点 / 25 边 / 3 个未绑定分支 | `annot annotate` 的 `forks` 行 |
+| grill-method | 26 节点 / 25 边 / 3 个未绑定分支 | 行内枚举没有结果表目标证据 |
+| 分支规则 fixture | 结果表首列 3 个分支 / 3 条精确标题边 | `test/fixtures/branch-table.md`，四视口通过 |
+| 分支图布局 | 结果分支同层显示；不补造跨分支顺序边 | `test/layout.test.ts` |
 | challenge | 13 节点 / 12 边 / 0 分支 | 同上 |
 | 面板链路 | `composed.registered: true`，rev `9b0a9bca464d` | `GET /api/annot/selfcheck` |
 | 面板是否被打开过 | **是**，用户在 desktop profile 里点开了 Annot 行并出图 | 用户截图 + `dom-after-mount` 上报 |
@@ -164,13 +167,13 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 
 **新增 `test/layout.test.ts` 三条**（列是真的列、一步与下一步恰好相邻一行、任意两卡不重叠），加上"没有侧卡的文件退回单列"一条。`sandbox/ui-check.mjs` 是一条真浏览器交互验收：17 条断言，覆盖悬停开/关、hot 与 dim 的分区、缩放档位与按钮文案、查找命中与清空——**光有源码不算交互存在**。
 
-`node --test test/*.test.ts test/*.test.js` = **157 条全绿**；`bash sandbox/run.sh` 7 段 17 条全绿；五份真实 skill（`release-checklist` / `agent-dev-standards` / `challenge` / `archery-query` / `grill-method`）四视口 `annot verify` 全绿。
+`node --test test/*.test.ts test/*.test.js` = **177 条全绿**；`bash sandbox/run.sh` 7 段 17 条全绿；五份真实 skill（`release-checklist` / `agent-dev-standards` / `challenge` / `archery-query` / `grill-method`）四视口 `annot verify` 全绿。
 
 ## 已知的洞（按严重度）
 
 | # | 洞 | 影响 | 下一步 |
 |---|---|---|---|
-| 1 | **真实输入从没产生过分叉带** | 三份真实 skill 实测 `bands = nodes`、`widest = 1`、`branch 边 = 0`：图目前是竖排编号清单，扇出那段几何在真实数据上一次没跑过。`release-checklist` 原文有 15 行条件句（`若…`、`否则…`、`失效`），抽取器一条都没认成分支 | 分支臂已画出来，但"两条分支各自流向不同后续"仍不成立；需要抽取器真的产出 `branch` 边（最佳匹配阈值 0.5 对中文短句太严） |
+| 1 | **五份样本没有结果表分支证据** | `grill-method` 有 3 个行内枚举分支，但没有以「守住 / 改良 / 替换」为首列的结果表；不能据此连到目标 | `test/fixtures/branch-table.md` 验证规则和 DAG 布局；等待真实 Skill 出现首列值与后续标题精确匹配的证据，不放宽规则 |
 | 2 | 表格的语义丢了类型 | 「八项必填」「三道门」现在能看见行，但类型仍是 `artifact @55%`——它们其实是 gate | 表格按首列表头词判定 gate/artifact |
 | 3 | `confidence` 是规则桶，不是置信度 | 已改称「规则」并显示规则名，但底层数值仍是拍的常数；整库 71.8% 节点是兜底的 `stage` | 要么给每个规则单独标定，要么把数值换成"规则命中了几条证据" |
 | 4 | 面板不缓存、不做逐节点漂移比对 | 它告诉你"这份图对应哪个 sha"，但不会把改过的节点标红 | 「改了就红」目前只有 `annot check` 能做 |
@@ -179,21 +182,24 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 | 7 | 侧列大多时候是空的 | 三列只在一行真有侧卡时才画，但 `release-checklist` 25 行里只有 8 行有；整页看下去，右两条轨道断断续续 | 要么把"常驻规则"这类侧卡上调（和 #6 是同一个判据），要么改成"每个阶段一组三列"而不是整页一条轨道 |
 | 8 | npm 的 `annot` 名字被占 | 不能 `npm i annot` | 发 scoped 包 |
 | 9 | 只有 `master` 分支、无 remote | 别人拿不到 | 建 GitHub 仓库 + push |
-| 10 | M4（trace 反投影 + eval）未开始 | 只能判断"图读得准不准"，不能判断"这个 skill 写得好不好" | 见 `docs/02` §8 |
+| 10 | eval 执行层尚未实现 | 已能生成配对评估与优化计划，但 baseline/Skill 运行、断言执行和 benchmark 汇总仍交给宿主或外部 harness | 接入 harness 后，把运行产物回填到统一报告 |
+| 11 | Codex 新 Agent 尚未在新会话中调用 | `annot@annot-local` 已安装、启用并刷新为三个 Skill 加 Agent 的缓存；当前进程仍可能保留启动时的能力清单 | 重启 Codex 后在新会话发起一次分析与一次评估，记录实际调用 |
+| 12 | ZCode 插件尚未在宿主 UI 安装 | manifest 已通过 ZCode 0.17.3 校验，本地 market 与三个 Skill 已生成；用户尚未完成市场添加和安装 | 在 ZCode 添加 `D:\Projects\flp\vibeskill\plugins`，安装 Annot 后新建任务试跑 |
 
 ## 目录里有什么
 
 ```
 src/         引擎（零依赖，零构建，Node 24 直接跑 .ts）
-  parse → flow → depth → drift → audit → context → search → render → visual → browser
+  parse → flow → depth → drift → audit → context → search → render → visual → browser → web
   fsx        原子写入（临时文件 + fsync + 空文件拒绝 + rename）
   manifest   annotation.json：相对路径 + 源 sha + 产物 sha256
 schema/      flow.schema.json（2020-12），6 条契约测试保证它和写出方不脱节
 plugin/      DSH 宿主壳（JS，无构建）
   index.js   8 条路由，除自述与临时目录外只读
   client.js  侧边栏行 + 主区页面，经 __ModuleLoader__ 注册
-test/        157 个测试，含 30 个插件测试、6 个面板渲染测试、6 个 schema 契约测试、
-             12 个布局测试、4 个分数一致性测试、10 个卡片契约测试
+plugins/     Codex Skill/Agent 插件、ZCode Skill 插件与两套本地 marketplace 清单
+web/         独立本地工作台静态资源，由 `annot web` 提供
+test/        242 个测试，覆盖 core、统一工作台守护进程、DSH、Codex manifest 与 Agent、ZCode manifest 与 Skill 同步、本地网页、AI 分析提案、评估任务、可配置扫描根、说明关联与浏览器渲染
 sandbox/     隔离验收脚本，不碰真实 ~/.agents；m3-experiment.ts 是 M3 验收实验
 tools/       人眼工具：inspect（表）/ explain（反查）/ probe-panel（打 GUI）
 docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照
@@ -205,12 +211,69 @@ docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照
 2. **二进制产物不能走 utf8 原子写入。** 截图必须走 `atomicWriteBytes(..., 'base64')`。曾经因为这点把 PNG 写成了 base64 文本，文件大小看起来完全正常。
 3. **面板不自己实现布局或抽取。** 每一次点击都 exec 同一个 CLI，所以面板和命令行不可能给出不同的图。
 
+## 分支识别与布局
+
+只有结果类表格的**首列**能提供自动分支目标；分支值必须与后续章节标题完全一致。行内枚举、其他列里的值和模糊词重叠都不构成落点证据。没有精确目标的分支保留为未绑定状态。
+
+`test/fixtures/branch-table.md` 覆盖 3 个结果和 3 条边，并断言互斥结果不被自动串成顺序步骤。出现已绑定分支边时使用分层 DAG 布局；没有分支边的文档继续使用线性三列布局或单列布局。现有 `grill-method` fixture 只有行内「守住 / 改良 / 替换」，因此仍显示 3 个未绑定分支、0 条 branch 边；五份现有样本也没有因此得到伪造的目标。
+
+## 说明关联与孤立文本率
+
+说明节点带 `noteRole`，区分为原则、理由、定义、触发、背景、风险、示例和参考。`associations` 是独立的非执行关系，可把说明连到动作（`supports`）、门禁（`constrains`）、判断（`informs`）或产物（`explains-output`），不改变 `maxDepth`。
+
+无法落到单个节点、但明确作用于整个 Skill 的说明标为 `skill`；既无节点目标也无全局范围的说明标为 `unbound` 并进入待确认清单。`annot.sidecar.json` 可用 `associatesWith` 指定目标，也可用 `associationScope: "skill" | "unbound"` 人工校正。
+
+孤立文本率 = 孤立说明数 / 说明总数。这是静态可追踪性信号，不是 Skill 行为效果分。2026-11-20 按本地网页默认候选根实测：75 个 Skill、942 条说明，779 条关联、70 条全局、93 条孤立，整体孤立率 9.9%；其中 42 个 Skill 为 0%，23 个在 1–25%，9 个在 26–50%，1 个高于 50%。
+
+## AI-first 分析与评估
+
+语义分析不再由 CLI 的动作词、门禁词和产物词表决定。`annot ai-prompt` 输出带逐行源码、源 hash 和 JSON 契约的分析任务；宿主 AI 判断节点类型、Action、边、分支、门禁、产物和说明关系；`annot annotate --analysis` 验证每段逐字引文和引用关系后生成图。
+
+插件同时提供 `annot-analysis` 和 `annot-evaluation` 两个 Skill。前者负责语义建图，后者负责从真实行为推导评估场景并执行隔离配对。主 `annot` Skill 只做路由。
+
+网页默认从 `.annot/analyses/<skill>.analysis.json` 加载已验证 AI 提案，并在标题区显示 `AI 语义分析`；没有提案时才回退到明确标注的 `规则草案`。`--analysis-dir` 可以覆盖缓存目录。网页中的“AI 重建动作图”和“评估与优化”都会生成宿主 AI 任务，不再生成关键词抽取说明。
+
+### 连线与缩放回归
+
+- 三列间距从 26px 增加到 64px，跨列关系只通过列间通道转弯，不再沿整列卡片边框向下。
+- 边线使用 `vector-effect: non-scaling-stroke`，执行线 2px、说明关联 1.6px；60% 缩放时线宽不再同比变细。
+- 重置缩放同时归零水平和垂直滚动，避免图从左侧被裁掉。
+- 新增 `edge-audit`：对当前 75 个 Skill 的 1443 条执行与说明关系检查，非端点卡片碰撞为 0。
+
+### 规范证据与任务输出回归
+
+- 标准检查的 `note-coverage` 返回孤立说明的节点 ID、标签和源码行范围；网页显示“定位 N 条孤立说明”，点击后切回动作图、打开卡片栏并筛选 `unbound`。
+- 动作摘要桌面左右内缩 48px、窄屏 32px；`annot verify` 在真实浏览器中检查标题、说明、动作区和数量标签的保护间距。
+- 评估指标提供“全选/清空”开关，手动勾选会同步按钮状态；8 个指标可一次全部选中。
+- 分析、修改、评估任务生成后自动打开原生 `dialog`。桌面弹窗宽度上限 1080px、高度上限 86vh，移动端保留 8px 外边距；复制和关闭均位于弹窗内。
+
+旧规则抽取仍保留，用于历史 fixture、迁移和回归；其 `source.method` 为 `rules`，只代表规则草案。AI 路径为 `source.method: ai` 并记录 `analysis_sha`。完整的确定性/非确定性边界见 `docs/ai-first-analysis.md`。
+
+## Codex 插件与本地网页
+
+Codex 包位于 `plugins/annot/`，portable 根 `plugin.json` 与 `skills/annot/SKILL.md` 按固定目录布局打包；manifest 声明 `requires_local_executor`。项目 marketplace 在 `.agents/plugins/marketplace.json`，当前 Codex 已安装并启用 `annot@annot-local`。`agents/annot-reviewer.md` 提供独立 Skill Reviewer Agent，仍通过同一组 `annot-analysis`、`annot-evaluation` 和 `annot` Skill 回到宿主对话执行。插件使用 `annot` CLI，不带第二套抽取代码。CLI 包名 `annot` 当前无法从 npm registry 安装；源码工作区可用 `npm link` 暴露本地命令。
+
+网页以 `node src/cli.ts web [root...] --port 8787` 或 `npm run web -- [root...]` 启动，只监听 `127.0.0.1`。省略 roots 时，`defaultRoots()` 扫描 18 个封闭候选根：当前项目与用户目录各有一份共享 Agents、Claude Code、Codex compatibility、Cursor、GitHub Copilot、Gemini CLI legacy、OpenCode、DSH、ZCode。Codex 官方共享根是 `.agents/skills`；`.codex/skills` 与 Gemini 目录作为兼容/legacy 项保留。`CODEX_HOME` 与 `CLAUDE_CONFIG_DIR` 会覆盖默认用户配置根，显式 roots 完全替代默认范围。
+
+左侧 Skill 库已合并信息层级：「扫描目录」置顶，可勾选常见工具根、追加自定义路径、应用后立即重扫，并可用「恢复默认」撤销。选择写入 `.annot/web-roots.json`，服务重启后继续生效；配置路径可用 `--root-config` 隔离。该写入只保存扫描范围，仍不写任何 Skill 源文件。主工作台与 QA 工作台使用不同配置文件，避免多实例互相覆盖。
+工作台顶部提供三个独立入口：
+
+- **Skill 库**：浏览单个 Skill、动作图、卡片上下文和自然语言任务。
+- **整库评估**：`GET /api/library-report` 一次汇总全部 Skill 的静态规范、资源引用、孤立说明和抽取结构问题；报告可按阻断/建议筛选，并导出 Markdown/JSON。未执行行为 eval 的 Skill 全部标为 `unmeasured`。
+- **版本管理**：`POST /api/snapshots` 将 Skill 路径、内容 hash 与原文保存到 `.annot/snapshots/`；`GET /api/snapshots/diff` 比较新增、修改和移除项。相同内容指纹在时间线中合并显示，但仍保留捕获次数；恢复动作只生成宿主任务。
+
+`POST /api/library-report/task` 在生成整库优化任务前自动创建基线快照，把机器可读报告写入 `.annot/reports/`，再返回包含快照、报告路径、阻断/建议问题和验收要求的 Markdown 任务。任务由 Codex、DSH 或 ZCode 宿主执行，工作台仍不直接修改 Skill。
+
+## 统一工作台入口
+
+`annot workbench open` 把“打开网页”收敛成一个宿主无关命令：先探测 `/api/status` 的实例 ID，健康实例直接复用；没有实例时后台启动 `annot web`，把 PID、端口和实例 ID 写入 `.annot/workbench.json`，日志写入 `.annot/workbench-<port>.log`。`status` 报告运行与受管状态，`stop` 只终止实例 ID 匹配的进程。Codex Agent/Skill 与 ZCode `open-workbench` 命令调用这一入口；DSH 原生面板增加 POST 路由和“浏览器打开”按钮，启动仍复用同一个 CLI。
+
+每个根内部最多递归 5 层，支持分类子目录；发现 `SKILL.md` 后停止下降。realpath 与 visited 集合阻止符号链接循环。缺失目录保留为 skipped 状态供页面解释，一个不可读子目录不会遮住同根的其他可读 Skill。
+
+本轮本地服务 HTTP 冒烟覆盖了列表、搜索、流程图、三条分支边、节点上下文、图 HTML、审计，以及修改/评估任务生成；自动测试覆盖 18 个候选根、环境变量覆盖、分类子目录、符号链接循环、缺失根透明展示、跨站、任意路径、写请求拒绝和 16 KiB 请求体上限。
+
+`POST /api/brief` 支持两种模式：`rewrite` 绑定一个节点并生成精确修改任务；`evaluate` 生成 baseline 与 Skill 的配对试验和优化回退规则。两者都只返回文本并声明 `writesSource: false`。页面在没有真实运行结果时显示“效果未测”，结构审计分不再被暗示为效果分。
+
 ## 接下来该做什么（如果只做一件）
 
-**让分叉在真实数据里真的出现。** 这一轮把"结构"又推进了一层：主路径变成一根直的竖脊，门禁和产物挂到它旁边，一张卡悬停就能看见它的上下游，画布从 4.7 屏降到 4.1 屏。但图里**仍然一条 `branch` 边都没有**：34 个节点排成 26 行、每行一张核心卡，读者看到的是一份编号清单，不是流程。
-
-原文里条件句并不少（`release-checklist` 有 15 行 `若…` / `否则…` / `失效`），抽取器一条都没认。`bestMatch()` 的词重叠阈值 0.5 对中文短句（"守住"/"改良"/"替换"）几乎不可能命中，而这三个词又恰恰是 `grill-method` 唯一的真分支。
-
-具体做法：给节点补一个"分支落点来自哪张表的首列"的抽取规则，把 `守住/改良/替换` 变成三个可连的目标；判据是 `annotate` 的 `forks` 行里 `bound` 从 0 变成 3、`bands` 少于 `nodes`。
-
-**这一轮的三列布局给这件事留了一个必须先想清楚的问题**：列模型假定"侧卡挂在它前面那个核心步骤上"，实测 0 处倒挂；一旦 `branch` 边真的出现，两条分支会指向不同的后续核心步骤，侧卡的归属就不再唯一，`rowsOf()` 的行规则必须重新推导——这正是上面量到的"0 倒挂"只对今天的线性图成立的原因。
+重启 Codex 桌面端一次，确认新缓存中的 `Annot Skill Reviewer` Agent 和三个 Skill 都能在新会话中被发现；再在新会话里发起一次真实的 Skill 分析与一次评估任务，记录调用结果。DSH 下次启动会从本地 junction 加载当前 panel，需要在宿主内确认 Annot 行与改写上下文仍然可见。ZCode 测试市场 `dev-vibeskill-9378cedf` 等待在宿主中手动添加、安装并试跑。其余待办见本文件「已知的洞」。

@@ -36,9 +36,25 @@ async function cli(argv: string[]): Promise<{ code: number; out: string; err: st
 test('the usage text lists every command it accepts', async () => {
   const { code, err } = await cli(['nope']);
   assert.equal(code, 1);
-  for (const command of ['annotate', 'check', 'list', 'search', 'audit', 'context', 'render', 'verify']) {
+  for (const command of ['annotate', 'ai-prompt', 'ai-evaluate', 'check', 'list', 'search', 'audit', 'review', 'context', 'render', 'verify', 'web', 'workbench']) {
     assert.match(err, new RegExp(command), `usage does not mention ${command}`);
   }
+});
+
+test('workbench rejects an unknown action and an invalid port', async () => {
+  const action = await cli(['workbench', 'publish']);
+  assert.equal(action.code, 1);
+  assert.match(action.err, /open, status, or stop/);
+
+  const port = await cli(['workbench', 'status', '--port', 'invalid']);
+  assert.equal(port.code, 1);
+  assert.match(port.err, /--port must be an integer/);
+});
+
+test('web rejects an invalid port before starting a listener', async () => {
+  const { code, err } = await cli(['web', '--port', 'not-a-port']);
+  assert.equal(code, 1);
+  assert.match(err, /--port must be an integer/);
 });
 
 test('a string option given no value is a clear error, not a TypeError', async () => {
@@ -108,4 +124,36 @@ test('version prints a version and exits 0', async () => {
   const { code, out } = await cli(['version']);
   assert.equal(code, 0);
   assert.match(out, /^annot \d+\.\d+\.\d+\n$/);
+});
+
+test('ai-prompt emits a line-numbered semantic analysis task', async () => {
+  const file = join(here, 'fixtures', 'grill-method.md');
+  const { code, out, err } = await cli(['ai-prompt', file, '--json']);
+  assert.equal(code, 0, err);
+  const payload = JSON.parse(out);
+  assert.match(payload.prompt, /不要用关键词表、动词表或正则规则/);
+  assert.match(payload.prompt, /0001 \|/);
+  assert.equal(payload.source_sha.length, 64);
+});
+
+test('ai-evaluate emits behavior scenarios without certifying a result', async () => {
+  const file = join(here, 'fixtures', 'grill-method.md');
+  const { code, out, err } = await cli(['ai-evaluate', file, '--intent', 'check recovery', '--metrics', 'recovery', '--json']);
+  assert.equal(code, 0, err);
+  const payload = JSON.parse(out);
+  assert.match(payload.prompt, /check recovery/);
+  assert.match(payload.prompt, /without-skill/);
+  assert.match(payload.prompt, /没有运行就明确写“未测”/);
+});
+
+test('review reports deterministic standards without claiming an effect score', async () => {
+  const file = join(here, 'fixtures', 'grill-method.md');
+  const { code, out } = await cli(['review', file, '--json']);
+  assert.equal(code, 0);
+  const report = JSON.parse(out);
+  assert.equal(report.skill, 'grill-method');
+  assert.ok(['ready', 'review', 'blocked'].includes(report.readiness));
+  assert.ok(report.checks.some((check: { id: string }) => check.id === 'references-exist'));
+  assert.equal(report.evaluation.stages.length, 5);
+  assert.equal(report.evaluation.boundary.includes('不等同于效果验证'), true);
 });

@@ -152,10 +152,11 @@ test('a shell line keeps its expectation as the subtitle', () => {
   assert.equal(doc.nodes[0].subtitle, '有输出即为正常');
 });
 
-test('every card records the rule that produced it, so the score can be explained', () => {
+test('ordinary prose records an explicit note rule instead of pretending to be a step', () => {
   const doc = flowOf(['# S', '', '## C', '', '一段普通的文字。', ''].join('\n'));
-  assert.equal(doc.nodes[0].rule, 'paragraph');
-  assert.equal(doc.nodes[0].confidence, 0.65);
+  assert.equal(doc.nodes[0].type, 'note');
+  assert.equal(doc.nodes[0].rule, 'non-action-context');
+  assert.equal(doc.nodes[0].confidence, 0.55);
   // The point: the score is a constant of the rule, not a probability.
   const other = flowOf(['# S', '', '## C', '', '另一段普通的文字。', ''].join('\n'));
   assert.equal(other.nodes[0].confidence, doc.nodes[0].confidence);

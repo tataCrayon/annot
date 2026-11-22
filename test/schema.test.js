@@ -21,6 +21,7 @@ import { parseSkill } from '../src/parse.ts';
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(here, '..');
 const schema = JSON.parse(readFileSync(join(ROOT, 'schema', 'flow.schema.json'), 'utf8'));
+const analysisSchema = JSON.parse(readFileSync(join(ROOT, 'schema', 'analysis.schema.json'), 'utf8'));
 
 /** A document produced by the real writer, so the schema is checked against it. */
 function sampleDoc() {
@@ -35,6 +36,7 @@ test('the schema is a legal JSON Schema 2020-12 document', () => {
   assert.deepEqual(schema.required.slice().sort(), ['edges', 'nodes', 'schema_version', 'sections', 'skill', 'source', 'stats']);
   assert.ok(schema.$defs.node, 'node definition missing');
   assert.ok(schema.$defs.edge, 'edge definition missing');
+  assert.ok(schema.$defs.association, 'association definition missing');
   assert.ok(schema.$defs.anchor, 'anchor definition missing');
 });
 
@@ -62,21 +64,29 @@ test('every field the writer emits is declared, at every level', () => {
       assert.ok(schema.$defs.edge.properties[key], `an edge writes "${key}" but the schema does not declare it`);
     }
   }
+  if (doc.associations.length > 0) {
+    for (const key of Object.keys(doc.associations[0])) {
+      assert.ok(schema.$defs.association.properties[key], `an association writes "${key}" but the schema does not declare it`);
+    }
+  }
 });
 
 test('the type and flag enums match what the writer can produce', () => {
   const doc = sampleDoc();
   const declaredTypes = schema.$defs.node.properties.type.enum;
-  assert.deepEqual(declaredTypes.slice().sort(), ['artifact', 'decision', 'external', 'gate', 'stage']);
+  assert.deepEqual(declaredTypes.slice().sort(), ['artifact', 'decision', 'external', 'gate', 'note', 'stage']);
   for (const node of doc.nodes) {
     assert.ok(declaredTypes.includes(node.type), `the writer emitted an undeclared type: ${node.type}`);
   }
 
   const declaredFlags = schema.$defs.node.properties.flags.items.enum;
-  assert.deepEqual(declaredFlags.slice().sort(), ['broken', 'dropped-by-sidecar', 'low-confidence', 'relocated', 'stale', 'unresolved-branch']);
+  assert.deepEqual(declaredFlags.slice().sort(), ['broken', 'dropped-by-sidecar', 'low-confidence', 'orphan-note', 'relocated', 'stale', 'unresolved-branch']);
   for (const node of doc.nodes) {
     for (const flag of node.flags) assert.ok(declaredFlags.includes(flag), `undeclared flag: ${flag}`);
   }
+
+  const declaredRoles = schema.$defs.node.properties.noteRole.enum;
+  assert.deepEqual(declaredRoles.slice().sort(), ['context', 'definition', 'example', 'principle', 'rationale', 'reference', 'risk', 'trigger']);
 
   const declaredEdges = schema.$defs.edge.properties.kind.enum;
   assert.deepEqual(declaredEdges.slice().sort(), ['branch', 'sequence']);
@@ -110,4 +120,11 @@ test('the published package ships the schema', () => {
     pkg.files.some((entry) => entry === 'schema' || entry.startsWith('schema/')),
     'package.json `files` does not include schema/, so npm would publish a schema nobody can fetch',
   );
+});
+
+test('the AI analysis schema requires exact source evidence', () => {
+  assert.equal(analysisSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
+  assert.deepEqual(analysisSchema.required.slice().sort(), ['edges', 'nodes', 'schema_version', 'skill', 'source_sha']);
+  assert.deepEqual(analysisSchema.properties.nodes.items.required.slice().sort(), ['end', 'id', 'label', 'quote', 'start', 'type']);
+  assert.match(analysisSchema.description, /exact source lines/);
 });

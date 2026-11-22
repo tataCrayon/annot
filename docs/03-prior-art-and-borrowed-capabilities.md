@@ -33,9 +33,9 @@
 |---|---|
 | **出处** | archify（`renderers/workflow/`、`layout contracts`、"stable compiler receipt"） |
 | **原文证据** | `SKILL.md:28` — "run `validate workflow <candidate.json> --layout-json` and use the stable compiler receipt; solver internals are not authoring controls"；`references/delivery-contract.md:11` 的原子交付 |
-| **annot 的对应物** | `layoutNodes()`：最长顺序路径松弛定深度 → 每条深度带一行、带内按锚点起点排序 → 带居中 → 直线或四段折线 `M … L …`（2026-11-18 从"列网格 + 三次贝塞尔"改掉：列网格把 19 步的流水线切成三列七行，读序要回到顶部，箭头往回指，图看着就是错的） |
+| **annot 的对应物** | `layoutNodes()`：无分支时按源顺序把核心步骤和侧卡排成自适应三列；存在分支边时按包含 sequence 与 branch 的最长路径定 DAG 深度，让互斥目标共享层级。连线用直线或肘接折线，布局结果可复算 |
 | **借了什么** | "**布局必须是确定性的、可复算的**"这个要求。archify 用 `receipt` 表达同一件事；annot 用"两次 `layoutNodes()` 输出必须完全相等"的测试表达 |
-| **没借到** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt` 这类可调控件）；annot 只有一种布局，没有诊断、没有修复回路。**2026-11-18 实测更糟**：三份真实 skill 全部 `bands == nodes`、`widest == 1`、`branch` 边为 0，布局已退化成竖排编号清单，而 `verify` 三视口全绿——诊断能证明"没溢出画布"，不能证明"画的是流程" |
+| **没借到** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt` 这类可调控件）；annot 根据抽取到的边自动布局，没有作者可调的几何参数，也没有修复回路。视觉正确性仍需结构断言与浏览器验收共同覆盖 |
 
 ### 1.3 typed JSON spec → renderer → validate → deliver，用退出码当契约
 
@@ -54,15 +54,16 @@
 | **annot 的对应物** | `flow.json` 的 `"schema_version": 1` |
 | **借了什么** | 只借了字段名与"显式声明版本"的习惯。annot 目前只有 v1，**没有做过迁移**，所以这条是空转的——真出现 v2 时才有意义 |
 
-### 1.5 多 root 发现 + source rank 去重（100/200/250/300/400/500/600）
+### 1.5 多 root 发现 + 宿主优先级去重
 
 | 项 | 内容 |
 |---|---|
 | **出处** | 本机 `@linxin666/dsh-client-ui-skill-explorer` v0.4.8（DSH 官方 skill 管理插件） |
-| **原文证据** | 该包 README 的 "Skills 七来源分组"；官方 rank：project `.dsh/skills` 100 / project `.agents/skills` 200 / runtime 250 / custom 300 / user `~/.dsh/skills` 400 / user `~/.agents/skills` 500 / bundled 600 |
-| **annot 的对应物** | `src/discover.ts` 的 `DEFAULT_RANKS`（**刻意略去 250**，因为 runtime 注册的 skill 没有目录可扫） |
-| **借了什么** | 整张 rank 表。这不是"参考"，是**照抄**——理由是：annot 看到的 skill 必须就是宿主看到的那一个，否则同一名字两个文件会让人以为是 annot 抽错了 |
-| **诚实标注** | 这是全项目**最直接的抄袭**，且是故意的。licence 层面无风险（数字与约定不是可版权对象），但归属必须写清楚 |
+| **原文证据** | 该包 README 的 "Skills 七来源分组"及其 project / custom / user / bundled rank |
+| **annot 的对应物** | `src/discover.ts` 的封闭 `defaultRoots()` 与 `DEFAULT_RANKS`；默认覆盖项目级和用户级共享 Agents、Claude Code、Codex compatibility、Cursor、GitHub Copilot、Gemini CLI legacy、OpenCode、DSH、ZCode，共 18 个候选根 |
+| **借了什么** | 借的是**多 root 扫描 + rank 去重**的原则：同名 Skill 由最低 rank 胜出，同 rank 时按路径稳定决策 |
+| **明确的差异** | annot 没有照抄 DSH 的整套数字。它按自己的产品边界定义 rank：项目共享 Agents 100、项目宿主镜像 110–170、custom 300、用户共享 Agents 400、用户宿主镜像 410–470、bundled 600 |
+| **诚实标注** | DSH 是这项工程原则的明确先例；annot 的扩展来自各工具当前官方目录约定，默认根、递归上限、缺失根展示与安全边界由 annot 自己的测试固定 |
 
 ### 1.6 审计摊表：把资产列成一张按证据排序的表
 
@@ -88,8 +89,8 @@
 | 项 | 内容 |
 |---|---|
 | **出处** | [okf-skills](https://github.com/scaccogatto/okf-skills)（449★）：一仓库五形态——Claude Code plugin + marketplace、skills.sh 可发现、GitHub Action、MCP server、`claude --plugin-dir` 本地开发 |
-| **annot 的对应物** | `docs/02` §1 的四形态对照表；最终选 "引擎 + 两个宿主壳" |
-| **借了什么** | "只做插件 = 主动放弃另外三个通道并绑死一个宿主"这个判断 |
+| **annot 的对应物** | 共用 `src/` 引擎；DSH 插件、Codex Skill-only 插件、可选 loopback 网页和 CLI 都复用同一条抽取/渲染链路，见 `docs/plans/2026-11-19-annot-codex-local-web.md` |
+| **借了什么** | "只做插件 = 主动放弃另外三个通道并绑死一个宿主"这个判断；网页入口显式启动，不另造一份引擎 |
 
 ### 1.9 结果：「标注」这个隐喻本身也不新
 
@@ -97,6 +98,16 @@
 |---|---|
 | **出处** | 旁注（marginalia）是印刷术以来的传统；工程上有 `git blame`、Vim 的 `:annotate`、编辑器的 inline annotation |
 | **说明** | 产品名 `annot` 表达的是"给任意 skill 做标注"，**没有发明新概念**，是把一个老隐喻套到新对象（SKILL.md）上。这不是缺点，但不应被讲成创新 |
+
+### 1.10 Skill 说明的可追踪性：借规范意识，不借一个现成分数
+
+Agent Skills 官方规范和最佳实践已经给出三条可核实依据：
+
+- [Specification](https://agentskills.io/specification)：`SKILL.md` 是元数据加指令正文，详细信息可以拆到 `references/` 等资源。
+- [Best practices](https://agentskills.io/skill-creation/best-practices)：正文会与对话、系统提示和其他 Skill 竞争上下文；应删掉模型本来就知道的内容，并通过真实执行轨迹发现无效说明。
+- [Evaluating skill output quality](https://agentskills.io/skill-creation/evaluating-skills)：用真实 prompt、期望输出、文件输入、断言、基准和多次迭代判断输出质量，而不是只看文档结构。
+
+annot 的“说明角色 + 关联目标 + 孤立文本率”是对需求工程中 bidirectional traceability 思路的产品化适配：先检查一段说明是否至少能追到一个动作、门禁、判断、产物或整个 Skill。公开 Skill 规范和上述评测文档没有定义“孤立文本率”，所以 annot 不把它包装成行业标准分数，也不把它混入行为效果分；该指标只用于导航和审查优先级。
 
 ---
 
@@ -182,11 +193,11 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **审计权重** | audit-slim：五个自问 + 明确判定动词（叙述性提及保留 / 指挥性引用改） | 权重（×10 / ×5 / ×2 / ×1 / ×20）依然是**拍的常数，零校准数据**，但**只剩一份**：`src/audit.ts` 的 `defectsOf()` 是唯一来源，产物右侧的分数恒等于 `100 − 审计分`。此前两处各有一套权重、方向相反 | 🟡 **口径已统一，校准仍未做**。辩护仍是"只用来排序，不用来判定合格与否" |
 | **模型可读性** | 都有 `references/`、typed schema、示例 | `schema/flow.schema.json`（2020-12）已存在，`test/schema.test.js` 用真实写出的文档做 6 条契约断言 | ✅ **已补**（此前这条写的是"没有写成 JSON Schema"，已过期） |
 | **布局诊断** | archify 有 layout compiler 与几何诊断（`via` / `channelX` / `labelAt`） | `verify` 能证明"卡片没溢出画布"；`src/diag.ts` 补上"画的是不是流程"这一层，输出 5 类可判定的发现（`forks-not-drawn` / `single-column` / `stage-dominated` / `labels-truncated` / `over-split`），同时进 `annotate` 报告尾部与产物右侧的「形状」栏 | 🟡 **诊断已补，修复回路仍无**。archify 的 `via` / `channelX` / `labelAt` 是能改布局的旋钮，annot 只有一种布局：诊断说"19 个节点排成 19 条单卡带"，但没有参数可以改它 |
-| **结构分层** | archify 的 spec 自带 `col`（逻辑列秩）与 `phases[].fromCol/toCol`，还有 `lane` 与 `sublabel` | `layoutNodes()` 按节点类型派生三列（`core` / `side` / `artifact`）、新增 `columns` 与 `columnHeaders`（自带计数与一句解释）、`phaseRuns`（声明式阶段连成强带、罩住 ≥2 卡的最近标题连成弱带）、节点新增 `lane` 与 `subtitle` | ✅ **借了 `col` 这个判断，但推导方式不同**：archify 让作者在 spec 里显式指定列，annot 从 `NodeType` 派生（`stage/decision → 核心`、`gate/external → 门禁`、`artifact → 产物`），因为 annot 的输入是别人的 `SKILL.md`，作者没写过列号。实测 4 份真实 skill 的侧卡挂靠 **0 处倒挂**，所以按"源文件顺序上最近的核心步骤"分行是安全的；一条 `branch` 边出现时这个前提就失效，见 `docs/00` 洞 #1 |
+| **结构分层** | archify 的 spec 自带 `col`（逻辑列秩）与 `phases[].fromCol/toCol`，还有 `lane` 与 `sublabel` | 线性文档按节点类型派生三列（`core` / `side` / `artifact`）；带分支边的文档使用分层 DAG。两者共享 `phaseRuns`、节点 `lane` 与 `subtitle` | ✅ **借了 `col` 这个判断，但推导方式不同**：线性流程由 `NodeType` 派生列；有分支边时不用侧卡挂靠规则，避免把互斥路径画成序列。自动目标只接受结果表首列值与后续标题的精确匹配 |
 | **阅读时的动效** | archify 的 `meta.animation: "trace"`、`meta.views`（≤5 章）、展台模式、寻路，且原则是 **motion-governed：静态必须自身完整** | 悬停点亮**直接**上下游（传递闭包实测点亮 33/34，等于没点亮）、6 档缩放 + `Ctrl+滚轮`、按标签/id/行号查找、底栏实时写上下游 | 🟡 **借了"静态优先 + 读者控制"的原则，没借 `meta.views` 手选章节**：annot 的阶段带来自文档本身而不是人工策展，所以没有"故事线"这个独立数据；自动播放（`trace` 的 Live 模式）也没做，因为每次打开都在动会打断读图 |
 | **图列契约的可验证性** | archify `validate --quality showcase` 拒绝 <8px 的路线段与 <16px 的内部转角 | `verify` 在四个视口检查节点数 / 重复 / 溢出 / 出界 / 零网络；`test/layout.test.ts` 三条几何不变式（列真的是列、一步与下一步恰好相邻一行、任意两卡不重叠）；`sandbox/ui-check.mjs` 17 条真浏览器交互断言 | ✅ 两侧都靠"可判定的断言"而不是"看起来对"，但 archify 有像素级的美学约束，annot 只保证不出错 |
 
-**如果只记一条**：交付契约这块已经追平到"不会毁掉上一次可信产物"的水平，结构分层也从 archify 借来了 `col` 这个判断（改成从节点类型派生）；剩下最大的实质差距不在审计权重，而在**布局退化成竖排清单时，诊断会说话了但没人能改它**——三份真实 skill 全部 `branch` 边为 0，`verify` 四视口全绿。`diag` 现在会把 `widest == 1` 报出来，但仍然没有 `via` / `channelX` 那样能改布局的作者可控旋钮。
+**如果只记一条**：annot 只根据可追溯的结构证据建立边。线性文档按三列阅读；结果表有精确标题目标时按 DAG 阅读。当前真实样本仍没有可绑定的结果表分支，针对性 fixture 验证了三条边和互斥目标同层布局；不会把行内枚举改造成真实 Skill 中不存在的流程。
 
 ---
 
@@ -206,9 +217,9 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 
 四条的共同点：**都不是"多给一个视图"，而是"给一个能返回 0/1 的判断"**。
 
-**还不能讲**的第五条：**"这张图是流程，不是清单"**。`verify` 只能证明画出来了，`diag` 现在会把 `widest == 1` 报出来但改不掉它；要讲这句话，得先让 `branch` 边在真实数据里出现。
+**还不能讲**的第五条：**"所有 Skill 图都已表现真实分叉"**。`verify` 证明浏览器里画出了图，结构断言证明 fixture 的分支关系符合规则；当前五份样本没有提供结果表首列与后续标题相匹配的分叉证据。
 
-这也解释了为什么 M1 不做插件 UI：插件 UI 是"多一个视图"，而 UI 加不进"图还对不对"这个判断。判断必须住在 CLI 里，才能被 CI、被 hook、被另一个 agent 调用。
+不同入口不承担判断逻辑：CLI 负责可复核的抽取与检查，DSH 面板、Codex Skill 和本地网页复用同一套结果。新增入口只改变操作方式，不改变图的事实来源。
 
 ---
 
@@ -238,5 +249,5 @@ annot 的 `audit` 评的是**另一件事**：*抽取器有没有读错这份文
 | **annot 无任何 React/DSH/MCP 依赖** | `grep -E "from '(react\|@deepseek-ai\|@modelcontextprotocol)" src/` → 无命中 |
 | **annot 的 flow.json 有 JSON Schema** | `schema/flow.schema.json`（2020-12）+ `test/schema.test.js` 6 条契约断言 |
 | **annot 的 M3 通过率** | `node sandbox/m3-experiment.ts` → `accepted 3/3 → M3 bar (>=2/3) met` |
-| **annot 的布局退化（未修）** | `sandbox/fanout.mjs` 对三份真实 flow.json → `bands 19/26/13, fan-out bands 0, widest 1, branch edges 0` |
+| **annot 的分支证据边界** | `test/branch.test.ts`：结果表首列与同名后续标题绑定；行内枚举与非首列值不绑定。`grill-method` 保持 `3 unresolved / 0 branch edges` |
 | okf-skills 一仓库五形态 | GitHub README（2026-11-12 读） |

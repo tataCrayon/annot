@@ -1,0 +1,4 @@
+interface:
+  display_name: "Annot Skill Reviewer"
+  short_description: "Analyze, evaluate, and improve Agent Skills with source evidence"
+  default_prompt: "Review this Agent Skill: show its real action flow, find gaps against its purpose, and propose the smallest evidence-backed change."

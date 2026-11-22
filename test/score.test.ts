@@ -50,14 +50,14 @@ test('the rail score is exactly the audit score, inverted', () => {
 test('maxDepth counts sequence steps, not heading nesting', () => {
   const doc = docOf('grill-method.md');
   const layout = layoutNodes(doc);
-  // The bug: `maxDepth` was `anchor.heading.length`, so this 26-step pipeline
-  // reported 2 while the canvas drew 26 bands.
+  // The bug: `maxDepth` was `anchor.heading.length`, so the main pipeline
+  // reported 2 while the canvas drew one band per flow node.
   assert.ok(doc.stats.maxDepth > 10, `maxDepth ${doc.stats.maxDepth} is still reporting heading depth`);
-  // It counts steps, not rows: since the column layout puts a gate on the same
-  // row as its step, the canvas has fewer rows than the document has steps, and
-  // both numbers are right about different things.
-  assert.equal(doc.stats.maxDepth, doc.nodes.length);
-  assert.ok(layout.bands.length < doc.nodes.length, 'every node still got its own row');
+  // Notes preserve source context but are not flow steps. They must not make a
+  // short action chain look like a 26-action pipeline in the rail count.
+  assert.ok(doc.nodes.some((node) => node.type === 'note'));
+  assert.ok(doc.stats.maxDepth < doc.nodes.length, 'context notes still inflate flow depth');
+  assert.ok(layout.bands.length <= doc.stats.maxDepth + 1);
 });
 
 test('a skill whose steps are all prose is not scored as unreadable', () => {

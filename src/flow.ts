@@ -6,6 +6,7 @@
 
 import { maxDepthOf } from './depth.ts';
 import { kindOf, linesSha, readable, type ParsedSkill, type RawLine, type Unit } from './parse.ts';
+import { associateNotes } from './associations.ts';
 import type {
   Branch,
   FlowDoc,
@@ -28,6 +29,27 @@ const GATE_WORDS = /禁止|不得|红线|门禁|铁律|必须|绝不允许|never
 const DECISION_WORDS = /如果|若|否则|取决于|分支|选择|判定|判断|裁决|分支条件|if\b|when\b|else\b|depends on|choice|branch/gi;
 const ARTIFACT_WORDS = /输出|产物|模板|格式|报告|卡片|artifact|output|template|format|report/gi;
 const EXTERNAL_WORDS = /工具|调用|spawn|subagent|web_?search|web_?fetch|bash|read\b|write\b|grep|glob|mcp|api\b/gi;
+/**
+ * Hard boundaries are nodes in their own right. Before this pattern, ordinary
+ * paragraphs lost the "gate versus instruction" race simply because they used
+ * one strong phrase instead of repeating two generic words.
+ */
+const HARD_GATE_WORDS = /一律拒绝|只允许|互相?不通用|代替不了|会\s*403|极易误判|先确认|必须同时|绝不允许|禁止|不得|must not|refuse to|stop and/i;
+/** A result line gives the output shape; it is evidence, not the action that produced it. */
+const OUTPUT_LEAD = /^(?:脚本)?输出\s*[:：]|^返回\s*[:：]|^结果\s*[:：]|^rows\s*=|^status\s*(?:!=|==|=)|^error\s*(?:!=|==|=)/i;
+/**
+ * The leading verb is the evidence that a stage is an action, not a fact.
+ * Chinese words need no `\b`: JavaScript defines that boundary around ASCII
+ * word characters, so `读取` followed by more Chinese could never match.
+ */
+const ACTION_LEAD = /^(?:(?:请|先|再|然后|随后|接着|最后|立即|务必|优先|尝试|开始|继续|按|依照|根据|从|向|对|把|将|用|通过|基于|针对|一句话|沿[^，,。；;\n]{0,20}|逐项)\s*)*(?:(?:选择|读取|获取|列出|列|查看|查询|核实|检查|核对|确认|验证|创建|新建|生成|提交|调用|运行|执行|保存|记录|返回|输出|拒绝|停止|加载|改写|比较|对比|合并|安装|打开|连接|请求|发送|提取|扫描|分析|审查|评审|评估|定位|处理|更新|复制|分类|归类|整理|拆分|判定|判断|判决|同步|拉取|推送|部署|回滚|修复|设置|配置|使用|编写|写|修改|改|删除|移除|标记|标注|汇总|填写|划定|收集|询问|咨询|决定|解析|渲染|上传|下载|发布|注册|登录|授权|鉴权|迁移|导入|导出|排序|过滤|匹配|构建|编译|测试|拉起|重启|说清|发问)|(?:(?:read|write|check|create|update|run|execute|fetch|pull|push|deploy|review|scan|search|generate|compare|validate|verify|inspect|list|load|save|use|open|call|request)(?=\b|\s|$)))/i;
+/** A permission paired with a hard responsibility limit is still a gate. */
+const CONDITIONAL_GATE = /(?:但|同时)必须[^。！？\n]{0,100}(?:不能|不得|禁止|拒绝)/i;
+/** Normative acceptance and size limits constrain an action even without a deny verb. */
+const EXPLICIT_CONSTRAINT = /(?:必须[^。！？\n]{0,80}(?:可回答|可证伪|可验证|可执行|满足|至少|至多|保持|避免)|(?:控制在|限制在|保持在)\s*\d+\s*(?:行|字|句|步|个|秒|分钟)(?:以内|内|以下)?)/i;
+const ORDERED_ITEM = /^\s*\d+[.)]\s+/;
+/** Short leading labels such as `只读：` are useful metadata, but the gate itself should start with its rule. */
+const GATE_LEAD = /^(?:安全红线|红线|限制|注意|只读)\s*[:：]\s*(?=只允许|仅允许|禁止|不得|拒绝|必须|保持|确认)/i;
 const BRANCH_ARM = /^\s*(?:[-*+]|\d+[.)])?\s*(?:✅|❌|🔧|🔁|🧪|→|⇒|=>)\s*/u;
 // No `\b` after the CJK half: JS word boundaries are ASCII-based, so `\b如果`
 // never matches and every Chinese conditional was silently ignored.
@@ -35,6 +57,7 @@ const BRANCH_COND = /^\s*(?:[-*+]|\d+[.)])?\s*(?:if\b|when\b|如果|若|当)/i;
 const INLINE_ELSE = /[:：]\s*(.+?)\s*[;；]\s*(?:否则|else)\s*(.+?)\s*$/i;
 const PINNED_MARKER = /<!--\s*sf:([a-z0-9_-]+)\s*-->/i;
 const TABLE_DATA_ROW = /^\s*\|/;
+const OUTCOME_HEADER = /^(?:结果|结论|判决|裁决|选择|决定|分支|result|outcome|verdict|choice|decision|branch)$/i;
 /** A fenced block's first line is a language tag, never a step name. */
 const CODE_TAG = /^(?:bash|sh|shell|zsh|fish|json|jsonc|javascript|js|typescript|ts|tsx|jsx|python|py|yaml|yml|toml|sql|http|text|txt|markdown|md|diff|xml|html|css|go|java|rust|rb|php|console|powershell|ps1|bat|cmd|ini|conf|env|dockerfile|makefile|mermaid|csv|graphql|proto|nix|lua|perl|r|swift|kotlin|scala|dart|elixir|erlang|haskell|clj|vim|tex)$/i;
 /** Steps the model itself performs, rather than the reader or a command. */
@@ -76,6 +99,11 @@ const ARROW_CONTINUATION = /^\s*(?:→|⇒|=>)\s*(.+)$/;
  * expanded into one node per stage, each with its own single-line anchor.
  */
 function segment(unit: Unit): Segment[] {
+  if (kindOf(unit.lines) === 'list') {
+    const actions = actionListSegments(unit);
+    if (actions.length > 0) return actions;
+  }
+
   const isCode = kindOf(unit.lines) === 'code';
   if (!isCode) return [{ lines: unit.lines }];
 
@@ -136,6 +164,27 @@ function segment(unit: Unit): Segment[] {
 }
 
 /** `idea → requirement → method → decision` on one line is a pipeline too. */
+function actionListSegments(unit: Unit): Segment[] {
+  const items = listItemSegments(unit.lines);
+  if (items.length < 2) return [];
+  const ordered = items.every((item) => ORDERED_ITEM.test(item[0].text));
+  if (!ordered) return [];
+  const actionable = items.filter((lines) => hasActionEvidence(lines.map((line) => readable(line.text)).join(' ')));
+  return actionable.length >= 2 && actionable.length / items.length >= 0.75
+    ? items.map((lines) => ({ lines, type: 'stage' as const }))
+    : [];
+}
+
+/** Group a list into contiguous item ranges, excluding an optional lead-in. */
+function listItemSegments(lines: RawLine[]): RawLine[][] {
+  const out: RawLine[][] = [];
+  for (const line of lines) {
+    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line.text)) out.push([line]);
+    else if (out.length > 0) out[out.length - 1].push(line);
+  }
+  return out.filter((item) => item[0] && item[0].text.trim() !== '');
+}
+
 function splitArrowChain(line: RawLine): Segment[] {
   const parts = line.text.split(/\s*(?:→|⇒|=>)\s*/).map((p) => p.trim()).filter(Boolean);
   if (parts.length < 2) return [];
@@ -149,6 +198,8 @@ function splitArrowChain(line: RawLine): Segment[] {
 export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOptions = {}): FlowDoc {
   const nodes: FlowNode[] = [];
   const used = new Map<string, number>();
+  const tableBranchSources = new Set<string>();
+  const manualAssociations = new Map<string, SidecarNodePatch>();
 
   for (const section of skill.sections) {
     for (const unit of section.units) {
@@ -156,9 +207,7 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
         // `segment()` returns pieces of one unit, so every derived fact below
         // describes the same source range the anchor does.
         const part: Unit = { kind: kindOf(piece.lines), heading: section.heading, lines: piece.lines };
-        const rule = piece.type
-          ? { type: piece.type, confidence: 0.85, why: 'declared-pipeline' }
-          : classify(part);
+        const rule = classifyDeclared(piece, part);
         const anchor = {
           heading: section.heading,
           start: piece.lines[0].n,
@@ -169,16 +218,23 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
         if (patch?.ignore) continue;
 
         const type = patch?.type ?? rule.type;
-        const autoLabel = piece.label ?? buildLabel(part, type);
+        const autoLabel = normalizeStageActionLabel(
+          part,
+          type,
+          piece.label ?? buildLabel(part, type),
+        );
         const label = patch?.rename ?? autoLabel;
         const id = uniqueId(label, used);
         const text = piece.lines.map((l) => readable(l.text)).filter(Boolean).join(' ').slice(0, 400);
         const raw = piece.lines.map((l) => l.text).join('\n');
+        const tableBranches = outcomeBranches(part);
         const branches = dedupeBranches([
-          ...extractBranches(part, type),
+          ...extractBranches(part, type, tableBranches),
           ...(piece.branches ?? []),
           ...(patch?.branches ?? []),
         ]);
+
+        if (tableBranches.length > 0) tableBranchSources.add(id);
 
         nodes.push({
           id,
@@ -198,13 +254,21 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
           source: patch ? 'sidecar' : 'extractor',
           flags: [],
         });
+        if (patch?.associatesWith || patch?.associationScope) {
+          manualAssociations.set(id, {
+            ...patch.associatesWith,
+            associationScope: patch.associationScope,
+          });
+        }
       }
     }
   }
 
+  const associations = associateNotes(nodes, manualAssociations);
   const edges = linkEdges(nodes);
-  applyBranchTargets(nodes, edges);
-  const stats = computeStats(nodes, edges);
+  applyBranchTargets(nodes, edges, tableBranchSources);
+  dropImplicitAlternativeSequences(nodes, edges, tableBranchSources);
+  const stats = computeFlowStats(nodes, edges, associations);
 
   return {
     skill: skill.name,
@@ -214,19 +278,60 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
       sha: skill.sha,
       lines: skill.totalLines,
       generated_at: (options.now ?? (() => new Date().toISOString()))(),
+      method: 'rules',
     },
     schema_version: 1,
     nodes,
     edges,
+    associations,
     sections: skill.sections.map((s, i) => ({
       id: `s${i}`,
       title: s.title,
       level: s.level,
       start: s.startLine,
     })),
-    phases: computePhases(nodes),
+    phases: computeFlowPhases(nodes),
     stats,
   };
+}
+
+/**
+ * A declared pipeline gives the split shape, but its labels still have to
+ * describe an action. `OUTPUT — …` and `IDEA → REQUIREMENT` are structure,
+ * not instructions to the reader, so the content after the marker decides the
+ * node type.
+ */
+/**
+ * A declared marker (STATE, ATTACK, VERDICT) names a slot in the author's
+ * pipeline; the card should name the action performed in that slot. Only
+ * action-backed bodies lose the marker, so other declarations keep their
+ * source wording instead of gaining an invented verb.
+ */
+function normalizeStageActionLabel(unit: Unit, type: NodeType, fallback: string): string {
+  if (type !== 'stage') return fallback;
+  const first = unit.lines[0];
+  const pipeline = first ? PIPELINE_LINE.exec(first.text) : null;
+  if (!pipeline || !hasActionEvidence(pipeline[2])) return fallback;
+  return truncate(normalizeLabel(pipeline[2], 'stage'), LABEL_MAX) || fallback;
+}
+
+function classifyDeclared(piece: Segment, part: Unit): Rule {
+  if (!piece.type) return classify(part);
+  const first = part.lines[0];
+  if (!first) return classify(part);
+  const pipeline = PIPELINE_LINE.exec(first.text);
+  const cleaned = pipeline
+    ? pipeline[2]
+    : first.text
+        .replace(ARROW_CONTINUATION, '$1')
+        .replace(ARROW_CHAIN, '$1');
+  const rule = classify({
+    ...part,
+    lines: [{ ...first, text: cleaned }, ...part.lines.slice(1)],
+  });
+  return rule.type === piece.type
+    ? { ...rule, confidence: Math.max(rule.confidence, 0.82), why: 'declared-action' }
+    : rule;
 }
 
 function classify(unit: Unit): Rule {
@@ -242,7 +347,14 @@ function classify(unit: Unit): Rule {
     if (BRANCH_ARM.test(text) || /分支|决策|判决/.test(text)) {
       return { type: 'decision', confidence: 0.7, why: 'code-with-arms' };
     }
-    if (EXTERNAL_WORDS.test(text)) return { type: 'external', confidence: 0.55, why: 'code-with-calls' };
+    const executable = unit.lines
+      .map((line) => line.text)
+      .filter((line) => line.trim() !== '' && !/^\s*#/.test(line) && !/^\s*(```|~~~)/.test(line))
+      .join('\n');
+    if (HARD_GATE_WORDS.test(executable)) return { type: 'gate', confidence: 0.8, why: 'code-gate' };
+    if (count(EXTERNAL_WORDS, text) > 0) {
+      return { type: 'external', confidence: 0.55, why: 'code-with-calls' };
+    }
     return { type: 'artifact', confidence: 0.6, why: 'code-block' };
   }
 
@@ -251,9 +363,10 @@ function classify(unit: Unit): Rule {
     const header = headerRow.replace(/^\s*\|/, '').split('|').map((c) => c.trim().replace(/[*`]/g, '')).filter(Boolean);
     const rows = unit.lines.filter((l) => TABLE_DATA_ROW.test(l.text)).length;
 
-    if (header.some((c) => /^(方向|direction)$/i.test(c))) {
-      return { type: 'external', confidence: 0.7, why: 'table-of-attack-vectors' };
+    if (outcomeBranches(unit).length > 0) {
+      return { type: 'decision', confidence: 0.8, why: 'table-of-outcomes' };
     }
+
     if (header.some((c) => /^(模式|mode|分支|branch)$/i.test(c))) {
       return { type: 'decision', confidence: 0.75, why: 'table-of-modes' };
     }
@@ -269,20 +382,29 @@ function classify(unit: Unit): Rule {
   const gateHits = count(GATE_WORDS, text);
   const decisionHits = count(DECISION_WORDS, text);
 
+  if (HARD_GATE_WORDS.test(text)) return { type: 'gate', confidence: 0.8, why: 'hard-gate' };
+  if (CONDITIONAL_GATE.test(text)) return { type: 'gate', confidence: 0.78, why: 'conditional-gate' };
+  if (EXPLICIT_CONSTRAINT.test(text)) return { type: 'gate', confidence: 0.78, why: 'explicit-constraint' };
+  if (OUTPUT_LEAD.test(unit.lines[0]?.text.trim() ?? '')) {
+    return { type: 'artifact', confidence: 0.8, why: 'output-line' };
+  }
   if (gateHits >= 2) return { type: 'gate', confidence: 0.75, why: 'gate-words' };
   if (decisionHits >= 2 && decisionHits > gateHits) {
     return { type: 'decision', confidence: 0.7, why: 'decision-words' };
   }
-  if (kind === 'quote') return { type: 'stage', confidence: 0.6, why: 'quote' };
   if (kind === 'list') {
-    const items = unit.lines.filter((l) => /^\s*(?:[-*+]|\d+[.)])\s+/.test(l.text)).length;
-    return { type: 'stage', confidence: items > 12 ? 0.5 : 0.7, why: items > 12 ? 'long-list' : 'short-list' };
+    const items = listItemSegments(unit.lines);
+    const actionItems = items.filter((lines) => hasActionEvidence(lines.map((line) => readable(line.text)).join(' ')));
+    if (actionItems.length > 0) {
+      return { type: 'stage', confidence: items.length > 12 ? 0.55 : 0.75, why: items.length > 12 ? 'long-action-list' : 'action-list' };
+    }
   }
-  return { type: 'stage', confidence: 0.65, why: 'paragraph' };
+  if (hasActionEvidence(text)) return { type: 'stage', confidence: 0.7, why: 'action-evidence' };
+  return { type: 'note', confidence: 0.55, why: 'non-action-context' };
 }
 
 function kindOfAfterMarker(text: string): NodeType | undefined {
-  const m = /<!--\s*sf:[a-z0-9_-]+\s+(gate|decision|artifact|external|stage)\s*-->/i.exec(text);
+  const m = /<!--\s*sf:[a-z0-9_-]+\s+(gate|decision|artifact|external|stage|note)\s*-->/i.exec(text);
   return (m?.[1] as NodeType | undefined) ?? undefined;
 }
 
@@ -308,8 +430,95 @@ function buildLabel(unit: Unit, type: NodeType): string {
   // Six of 92 nodes in four real skills did this, and the whole command was
   // invisible underneath.
   const content = cells.filter((c) => !CODE_TAG.test(c));
-  const first = content[0] ?? type;
-  return truncate(stripHeadingMark(first), LABEL_MAX) || type;
+  if (kindOf(unit.lines) === 'code' && type === 'external') {
+    const commandLabel = describeCodeActions(unit);
+    if (commandLabel) return truncate(commandLabel, LABEL_MAX);
+  }
+
+  const candidates = labelCandidates(unit, content);
+  if (type === 'stage') {
+    const action = candidates.find((candidate) => hasActionEvidence(candidate));
+    if (action) return truncate(normalizeLabel(action, type), LABEL_MAX);
+  }
+  const first = candidates[0] ?? cells[0] ?? type;
+  const best = candidates
+    .map((candidate, index) => ({
+      candidate: normalizeLabel(candidate, type),
+      index,
+      score: candidateScore(candidate, type),
+    }))
+    .filter((entry) => entry.candidate.length > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0];
+  let label = best?.candidate ?? stripHeadingMark(first);
+  if (kindOf(unit.lines) === 'code' && type === 'gate' && /必须同时带$/.test(label)) {
+    const detail = candidates[best.index + 1];
+    if (detail) label += ` ${normalizeLabel(detail, 'gate')}`;
+  }
+  return truncate(label, LABEL_MAX) || type;
+}
+
+/** Sentence-sized candidates keep a useful action from disappearing inside a long paragraph. */
+function labelCandidates(unit: Unit, content: string[]): string[] {
+  if (kindOf(unit.lines) === 'code') return content;
+  // A list is one source unit, but its first line names the contract a reader
+  // should see first. Later bullets stay verbatim in the anchored raw text.
+  const lines = kindOf(unit.lines) === 'list' ? content.slice(0, 1) : content;
+  return lines.flatMap((line) => {
+    const sentences = line.match(/[^。！？!?；;]+[。！？!?；;]?/gu) ?? [line];
+    return sentences.map((sentence) => sentence.trim()).filter(Boolean);
+  });
+}
+
+/**
+ * A command block often starts with environment setup and comments. The setup
+ * variable is not the action; the comments name the operations the block offers.
+ */
+function describeCodeActions(unit: Unit): string | undefined {
+  const inner = unit.lines
+    .map((line) => line.text.trim())
+    .filter((line) => line !== '' && !/^(```|~~~)/.test(line));
+  const comments = inner
+    .filter((line) => /^#+\s*\S/.test(line))
+    .map((line) => readable(line).replace(/^#+\s*/, '').trim())
+    .filter((line) => line.length > 0 && !CODE_TAG.test(line));
+  const uniqueComments = [...new Set(comments)];
+  if (uniqueComments.length > 0) return uniqueComments.join(' / ');
+
+  const command = inner.find((line) => !/^(?:[A-Z_][A-Z0-9_]*=|\S+\s*=)/.test(line));
+  return command ? stripHeadingMark(readable(command)) : undefined;
+}
+
+function candidateScore(text: string, type: NodeType): number {
+  const clean = stripHeadingMark(text).trim();
+  let score = 0;
+  if (type === 'stage' && hasActionEvidence(clean)) score += 12;
+  else if (ACTION_LEAD.test(clean)) score += 3;
+  if (HARD_GATE_WORDS.test(clean)) score += type === 'gate' ? 12 : 1;
+  if (CONDITIONAL_GATE.test(clean)) score += type === 'gate' ? 10 : 1;
+  if (OUTPUT_LEAD.test(clean)) score += type === 'artifact' ? 14 : -18;
+  if (type === 'gate' && /先确认|只允许|一律拒绝|禁止|不得|代替不了|互不通用|会\s*403/i.test(clean)) score += 5;
+  if (type === 'decision' && count(DECISION_WORDS, clean) > 0) score += 5;
+  if (/^[#>*\s]*(?:背景|说明|概览|示例|注意)[:：]/.test(clean)) score -= 3;
+  if (clean.length >= 6 && clean.length <= LABEL_MAX) score += 3;
+  return score;
+}
+
+function hasActionEvidence(text: string): boolean {
+  const clean = stripHeadingMark(readable(text)).replace(/^[\p{Extended_Pictographic}\uFE0F\u200D\s]+/u, '').trim();
+  if (ACTION_LEAD.test(clean)) return true;
+  const conditional = /^(?:如果|若|当|在|完成|确认|收到|拿到|看到|发现)[^，,。；;]{0,40}[，,]\s*(.+)$/u.exec(clean);
+  if (conditional && ACTION_LEAD.test(conditional[1].trim())) return true;
+  const afterCondition = /^[^，,。；;]{1,36}(?:时|后)[，,]\s*(.+)$/u.exec(clean);
+  return Boolean(afterCondition && ACTION_LEAD.test(afterCondition[1].trim()));
+}
+
+function normalizeLabel(text: string, type: NodeType): string {
+  let label = stripHeadingMark(text).replace(/\s+/g, ' ').trim();
+  if (type === 'artifact') label = label.replace(/^脚本输出\s*[:：]\s*/, '输出：');
+  if (type === 'gate') label = label.replace(GATE_LEAD, '');
+  if (type === 'stage') label = label.replace(/^(?:第\s*[一二三四五六七八九十\d]+\s*步|步骤\s*\d+)\s*(?:[:：—–-]\s*)?/i, '');
+  label = label.replace(/^(?:所以|因此)\s*/, '');
+  return label.replace(/[:：。；;]\s*$/, '').trim();
 }
 
 /**
@@ -379,6 +588,7 @@ function buildSubtitle(unit: Unit, label: string): string | undefined {
  */
 function laneOf(unit: Unit, type: NodeType): Lane {
   if (type === 'artifact') return 'output';
+  if (type === 'note') return 'reader';
   if (type === 'external') return 'tool';
   if (kindOf(unit.lines) === 'code') return 'tool';
   const text = unit.lines.map((l) => l.text).join('\n');
@@ -438,8 +648,10 @@ function shortHash(text: string): string {
  */
 const TEMPLATE_HEADING = /模板|template|示例|example|输出|output|清单/i;
 
-function extractBranches(unit: Unit, type: NodeType): Branch[] {
+function extractBranches(unit: Unit, type: NodeType, tableBranches: Branch[]): Branch[] {
+  if (type === 'note') return [];
   if (unit.heading.some((h) => TEMPLATE_HEADING.test(h))) return [];
+  if (tableBranches.length > 0) return tableBranches;
 
   const isCode = kindOf(unit.lines) === 'code';
   const hasArms = unit.lines.some((l) => BRANCH_ARM.test(l.text));
@@ -484,6 +696,34 @@ function extractBranches(unit: Unit, type: NodeType): Branch[] {
   // eighteen edges that can never land — which is exactly the noise that made
   // the unresolved-branch count useless.
   return out.filter((b) => !RULE_TEXT.test(b.when));
+}
+
+function outcomeBranches(unit: Unit): Branch[] {
+  if (kindOf(unit.lines) !== 'table') return [];
+  if (unit.heading.some((h) => TEMPLATE_HEADING.test(h))) return [];
+
+  const rows = unit.lines.filter((line) => TABLE_DATA_ROW.test(line.text)).map(tableCells);
+  const header = rows[0]?.[0] ?? '';
+  if (!OUTCOME_HEADER.test(header)) return [];
+
+  const outcomes = rows.slice(1).filter((row) => !row.every(isDividerCell)).map((row) => row[0] ?? '');
+  const values = [...new Set(outcomes.map(normalizeChoice).filter((value) => value.length > 0))];
+  if (values.length < 2 || values.length > 6) return [];
+  if (values.some((value) => value.length > 24)) return [];
+  return values.map((when) => ({ when }));
+}
+
+function tableCells(line: RawLine): string[] {
+  return line.text.trim().replace(/^\|/, '').replace(/\|$/, '').split('|')
+    .map((cell) => normalizeChoice(cell));
+}
+
+function isDividerCell(cell: string): boolean {
+  return /^:?-{3,}:?$/.test(cell);
+}
+
+function normalizeChoice(text: string): string {
+  return readable(text.replace(/[*_`]/g, '').trim());
 }
 
 /** Prohibitions and constraints: the author is forbidding, not forking. */
@@ -538,10 +778,36 @@ function dedupeBranches(branches: Branch[]): Branch[] {
 
 function linkEdges(nodes: FlowNode[]): FlowEdge[] {
   const edges: FlowEdge[] = [];
-  for (let i = 1; i < nodes.length; i++) {
-    edges.push({ from: nodes[i - 1].id, to: nodes[i].id, kind: 'sequence' });
+  const flow = nodes.filter((node) => node.type !== 'note');
+  for (let i = 1; i < flow.length; i++) {
+    edges.push({ from: flow[i - 1].id, to: flow[i].id, kind: 'sequence' });
   }
   return edges;
+}
+
+function dropImplicitAlternativeSequences(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  tableSources: Set<string>,
+): void {
+  const scopes = branchScopes(nodes, tableSources);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const retained = edges.filter((edge) => keepSequenceEdge(edge, nodeById, scopes));
+  edges.splice(0, edges.length, ...retained);
+}
+
+function keepSequenceEdge(
+  edge: FlowEdge,
+  nodeById: Map<string, FlowNode>,
+  scopes: BranchScope[],
+): boolean {
+  if (edge.kind !== 'sequence') return true;
+  const from = nodeById.get(edge.from);
+  const to = nodeById.get(edge.to);
+  if (!from || !to) return true;
+  const fromScope = scopeOf(from, scopes);
+  const toScope = scopeOf(to, scopes);
+  return !fromScope && !toScope ? true : fromScope !== undefined && fromScope === toScope;
 }
 
 /**
@@ -549,10 +815,16 @@ function linkEdges(nodes: FlowNode[]): FlowEdge[] {
  * overlap against sibling labels — deliberately dumb, because a wrong edge
  * that is flagged is better than a clever edge that is silently wrong.
  */
-function applyBranchTargets(nodes: FlowNode[], edges: FlowEdge[]): void {
+function applyBranchTargets(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  tableSources: Set<string>,
+): void {
   for (const node of nodes) {
     for (const branch of node.branches) {
-      const target = bestMatch(node, branch.when, nodes);
+      const target = branch.to
+        ? nodes.find((candidate) => candidate.id === branch.to)
+        : tableSources.has(node.id) ? exactHeadingMatch(node, branch.when, nodes) : undefined;
       if (target) {
         branch.to = target.id;
         edges.push({ from: node.id, to: target.id, when: branch.when, kind: 'branch' });
@@ -560,47 +832,66 @@ function applyBranchTargets(nodes: FlowNode[], edges: FlowEdge[]): void {
         pushFlag(node, 'unresolved-branch');
       }
     }
-    if (node.confidence < 0.6) pushFlag(node, 'low-confidence');
+    // A note is the explicit "this prose did not instruct an action" result.
+    // Treating that stable fallback as an unresolved flow node made every
+    // explanatory paragraph inflate the audit and its inspector badge.
+    if (node.type !== 'note' && node.confidence < 0.6) pushFlag(node, 'low-confidence');
   }
 }
 
-function bestMatch(source: FlowNode, when: string, nodes: FlowNode[]): FlowNode | undefined {
-  const tokens = tokensOf(when);
-  let best: { node: FlowNode; score: number } | undefined;
-  for (const candidate of nodes) {
-    if (candidate.id === source.id) continue;
-    if (candidate.anchor.start <= source.anchor.start) continue;
-    const score = overlap(tokens, tokensOf(candidate.label));
-    if (score >= 0.5 && (!best || score > best.score)) best = { node: candidate, score };
-  }
-  return best?.node;
-}
-
-function tokensOf(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((t) => t.length > 1),
+function exactHeadingMatch(source: FlowNode, when: string, nodes: FlowNode[]): FlowNode | undefined {
+  return nodes.find((candidate) =>
+    candidate.anchor.start > source.anchor.start &&
+    candidate.anchor.heading.some((heading) => normalizeChoice(heading) === normalizeChoice(when)),
   );
 }
 
-function overlap(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let hit = 0;
-  for (const t of a) if (b.has(t)) hit++;
-  return hit / Math.min(a.size, b.size);
+interface BranchScope {
+  id: string;
+  sourceStart: number;
+  path: string[];
+}
+
+function branchScopes(nodes: FlowNode[], tableSources: Set<string>): BranchScope[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  return nodes.filter((node) => tableSources.has(node.id)).flatMap((source) =>
+    source.branches.flatMap((branch) => {
+      const target = branch.to ? nodeById.get(branch.to) : undefined;
+      if (!target) return [];
+      const index = target.anchor.heading.findIndex((heading) => normalizeChoice(heading) === normalizeChoice(branch.when));
+      return index < 0 ? [] : [{ id: `${source.id}:${branch.when}`, sourceStart: source.anchor.start, path: target.anchor.heading.slice(0, index + 1) }];
+    }),
+  );
+}
+
+function scopeOf(node: FlowNode, scopes: BranchScope[]): string | undefined {
+  return scopes
+    .filter((scope) => node.anchor.start > scope.sourceStart && startsWithPath(node.anchor.heading, scope.path))
+    .sort((left, right) => right.path.length - left.path.length)[0]?.id;
+}
+
+function startsWithPath(path: string[], prefix: string[]): boolean {
+  return prefix.every((part, index) => normalizeChoice(path[index] ?? '') === normalizeChoice(part));
 }
 
 function pushFlag(node: FlowNode, flag: NodeFlag): void {
   if (!node.flags.includes(flag)) node.flags.push(flag);
 }
 
-function computeStats(nodes: FlowNode[], edges: FlowEdge[]): FlowDoc['stats'] {
-  const byType = { stage: 0, decision: 0, gate: 0, artifact: 0, external: 0 } as Record<NodeType, number>;
+export function computeFlowStats(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  associations: FlowDoc['associations'],
+): FlowDoc['stats'] {
+  const byType = { stage: 0, decision: 0, gate: 0, artifact: 0, external: 0, note: 0 } as Record<NodeType, number>;
   for (const n of nodes) byType[n.type]++;
   const byLane = { reader: 0, tool: 0, model: 0, output: 0 } as Record<Lane, number>;
   for (const n of nodes) byLane[n.lane]++;
+  const notes = nodes.filter((node) => node.type === 'note');
+  const associatedIds = new Set(associations.map((association) => association.from));
+  const associated = notes.filter((node) => associatedIds.has(node.id)).length;
+  const global = notes.filter((node) => node.associationScope === 'skill').length;
+  const unbound = notes.filter((node) => node.associationScope === 'unbound').length;
   return {
     byType,
     byLane,
@@ -609,6 +900,14 @@ function computeStats(nodes: FlowNode[], edges: FlowEdge[]): FlowDoc['stats'] {
     // Flow depth, not heading depth. It used to be `anchor.heading.length`, so a
     // 19-step pipeline reported 2 while the canvas drew 19 bands.
     maxDepth: maxDepthOf(nodes, edges),
+    noteCoverage: {
+      total: notes.length,
+      associated,
+      global,
+      unbound,
+      coverageRate: notes.length ? (associated + global) / notes.length : 1,
+      orphanTextRate: notes.length ? unbound / notes.length : 0,
+    },
   };
 }
 
@@ -618,7 +917,7 @@ function computeStats(nodes: FlowNode[], edges: FlowEdge[]): FlowDoc['stats'] {
  * Built from the nodes rather than the sections so a phase with no nodes never
  * becomes an empty column on the canvas.
  */
-function computePhases(nodes: FlowNode[]): FlowDoc['phases'] {
+export function computeFlowPhases(nodes: FlowNode[]): FlowDoc['phases'] {
   const seen = new Map<string, number>();
   for (const node of nodes) {
     if (!node.phase) continue;

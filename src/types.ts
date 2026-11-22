@@ -5,7 +5,15 @@
  * instead of silently re-guessed.
  */
 
-export type NodeType = 'stage' | 'decision' | 'gate' | 'artifact' | 'external';
+export type NodeType = 'stage' | 'decision' | 'gate' | 'artifact' | 'external' | 'note';
+
+/** What an explanatory note does, independent of the node's structural type. */
+export type NoteRole = 'principle' | 'rationale' | 'definition' | 'trigger' | 'context' | 'risk' | 'example' | 'reference';
+
+/** Whether a note belongs to a node, the whole Skill, or no target. */
+export type AssociationScope = 'node' | 'skill' | 'unbound';
+
+export type AssociationRelation = 'supports' | 'constrains' | 'informs' | 'explains-output';
 
 /**
  * Who performs a step. Orthogonal to {@link NodeType}: a gate can be checked by
@@ -67,8 +75,12 @@ export interface FlowNode {
   confidence: number;
   /** The rule that produced this node, so the score above can be explained. */
   rule?: string;
-  /** Human override reason, set when a sidecar annotation produced this node. */
-  source?: 'extractor' | 'sidecar';
+  /** Provenance of the semantic classification. */
+  source?: 'extractor' | 'analysis' | 'sidecar';
+  /** More specific role for explanatory notes; absent on executable nodes. */
+  noteRole?: NoteRole;
+  /** Where the explanation applies after relation analysis. */
+  associationScope?: AssociationScope;
   /** Soft markers surfaced in the UI: low confidence, unresolved branch, etc. */
   flags: NodeFlag[];
 }
@@ -79,7 +91,23 @@ export type NodeFlag =
   | 'stale'
   | 'relocated'
   | 'broken'
-  | 'dropped-by-sidecar';
+  | 'dropped-by-sidecar'
+  | 'orphan-note';
+
+/**
+ * A non-flow relationship. Unlike sequence and branch edges, associations do
+ * not change execution depth; they answer which action, gate, decision or
+ * artifact an explanatory paragraph supports.
+ */
+export interface FlowAssociation {
+  from: string;
+  to: string;
+  relation: AssociationRelation;
+  evidence: 'explicit-reference' | 'same-section' | 'nearest-structural' | 'ai-analysis';
+  confidence: number;
+  /** Why the analyst chose this target; preserved for review. */
+  rationale?: string;
+}
 
 export interface FlowEdge {
   from: string;
@@ -97,10 +125,15 @@ export interface FlowDoc {
     sha: string;
     lines: number;
     generated_at: string;
+    /** Semantic method that produced the graph. */
+    method?: 'rules' | 'ai';
+    /** Hash of the accepted AI proposal, when method is `ai`. */
+    analysis_sha?: string;
   };
   schema_version: 1;
   nodes: FlowNode[];
   edges: FlowEdge[];
+  associations: FlowAssociation[];
   sections: Array<{ id: string; title: string; level: number; start: number }>;
   /**
    * Phase columns, outermost first, derived from headings that name a phase.
@@ -116,6 +149,16 @@ export interface FlowDoc {
     lowConfidence: number;
     stale: number;
     maxDepth: number;
+    noteCoverage: {
+      total: number;
+      associated: number;
+      global: number;
+      unbound: number;
+      /** Associated or Skill-wide notes divided by all notes. */
+      coverageRate: number;
+      /** Notes with no node or Skill scope divided by all notes. */
+      orphanTextRate: number;
+    };
   };
 }
 
@@ -134,6 +177,10 @@ export interface SidecarNodePatch {
   confirm?: boolean;
   /** Hand-authored edges, by target label or line start. */
   then?: Array<{ when?: string; toLabel?: string; toStart?: number }>;
+  /** Hand-authored explanation relationship. */
+  associatesWith?: { toLabel?: string; toStart?: number; relation?: AssociationRelation };
+  /** Force an explanatory note to a node, the whole Skill, or the review queue. */
+  associationScope?: AssociationScope;
   branches?: Branch[];
 }
 

@@ -243,7 +243,7 @@ const DOC = {
   ],
   edges: [{ from: 'n-a', to: 'n-b', kind: 'sequence' }],
   sections: [{ id: 's0', title: '流程', level: 2, start: 1 }],
-  stats: { byType: { stage: 1, decision: 1, gate: 0, artifact: 0, external: 0 }, lowConfidence: 1, stale: 0, maxDepth: 2 },
+  stats: { byType: { stage: 1, decision: 1, gate: 0, artifact: 0, external: 0, note: 0 }, lowConfidence: 1, stale: 0, maxDepth: 2 },
 };
 
 const ROUTES = {
@@ -277,6 +277,7 @@ test('after the list loads the panel shows the skill count and says what to do n
   const text = textOf(tree);
   assert.match(text, /1 个 skill/, `the skill count never appeared: ${text.slice(0, 200)}`);
   assert.match(text, /找一个 skill/, 'the sidebar heading never appeared');
+  assert.match(text, /浏览器打开/, 'the standalone workbench action never appeared');
   // The canvas is empty here, and an empty canvas with no instruction is the
   // state a user reads as "this thing is broken".
   assert.match(text, /右边的列表里搜一个 skill/, 'the empty canvas lost its instruction');
@@ -286,7 +287,7 @@ test('the legend names every node type, and is drawn with the graph', () => {
   // The legend lives inside `Graph`, so it appears exactly when a graph does.
   // A rendered-graph assertion would need a flow fetch; asserting the source
   // keeps the labels from silently diverging from NODE_COLORS.
-  for (const label of ['阶段', '判定', '门禁', '产物', '外部调用']) {
+  for (const label of ['关键动作', '判断', '门禁', '产物', '外部调用', '说明']) {
     assert.match(SOURCE, new RegExp(`'${label}'`), `no legend label for ${label}`);
   }
   assert.match(SOURCE, /function Legend\(\)/);

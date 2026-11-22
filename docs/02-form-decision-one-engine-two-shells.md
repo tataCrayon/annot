@@ -1,7 +1,7 @@
-# 形态定稿：一套引擎，两个常驻壳（DSH 插件 + Claude Code MCP）
+# 原始形态研究：一套引擎，两个宿主壳
 
-> 输入约束（用户确认）：对外发布 / 开源；日常 DSH + Claude Code 双宿主；要「可开关的常驻能力」，支持实时搜索、查看、修改 Skill。
-> 本文回答"怎么做"，并给出可执行的分层、数据契约、常驻开关机制、里程碑与放弃条件。
+> 本文保留最初 DSH + Claude Code 形态调研。当前有效入口为共享 CLI/Core、DSH 插件、Codex Skill-only 插件与可选本地网页；决策和前置条件见 [`docs/plans/2026-11-19-annot-codex-local-web.md`](plans/2026-11-19-annot-codex-local-web.md)。
+> 下方关于 Claude Code、两个宿主壳和常驻机制的判断属于原始方案研究，不再描述当前入口组合。
 > **本轮未能复核的外部事实已显式标注**（受机器内存 pressure 限制，web_fetch 被护栏拦截两次）。
 
 ---

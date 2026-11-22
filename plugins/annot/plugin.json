@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "annot",
+  "version": "0.1.0",
+  "description": "AI-first semantic analysis, source-linked action graphs, and evidence-backed evaluation for Agent Skills.",
+  "author": {
+    "name": "annot maintainers"
+  },
+  "license": "MIT",
+  "keywords": ["agent-skills", "flow-diagram", "audit", "skill-evaluation", "skill-optimization", "source-anchors", "codex", "local-web"],
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "interface": {
+        "displayName": "Annot",
+        "shortDescription": "Review Skill flows against their source",
+        "longDescription": "Use AI analysis Skills to interpret Skill semantics, validate every claim against exact source anchors, render an evidence-linked action graph, and evaluate real behavior with isolated baseline comparisons.",
+        "developerName": "annot",
+        "category": "Developer Tools",
+        "capabilities": ["Read"],
+        "defaultPrompt": [
+          "Analyze this Skill semantically and show its source-linked action flow.",
+          "Audit the Skills in this folder.",
+          "Find the exact lines behind this Skill step.",
+          "Evaluate this Skill with paired tests and real evidence."
+        ]
+      }
+    }
+  }
+}

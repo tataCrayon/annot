@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>annot 本地网页 UX 草图</title>
+  <style>
+    :root { color-scheme: light; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; color: #222; background: #f4f4f4; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; height: 100vh; display: flex; flex-direction: column; }
+    button, input { font: inherit; }
+    button { min-height: 38px; padding: 6px 12px; border: 1px solid #888; background: #fff; color: #222; cursor: pointer; }
+    button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid #333; outline-offset: 2px; }
+    .topbar { height: 58px; display: flex; align-items: center; gap: 16px; padding: 0 20px; border-bottom: 1px solid #999; background: #fff; }
+    .brand { font-weight: 700; font-size: 18px; }
+    .status { margin-left: auto; color: #555; }
+    .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+    aside { padding: 16px; border-right: 1px solid #aaa; background: #eee; overflow: auto; }
+    h1, h2, p { margin-top: 0; }
+    h1 { font-size: 16px; }
+    h2 { margin: 20px 0 8px; font-size: 13px; }
+    .roots { padding: 10px; border: 1px solid #aaa; background: #fff; overflow-wrap: anywhere; }
+    .roots small { display: block; color: #555; }
+    input { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid #888; background: #fff; }
+    .list { list-style: none; margin: 8px 0; padding: 0; }
+    .list button { width: 100%; margin-bottom: 6px; text-align: left; }
+    .list button[aria-current="true"] { outline: 2px solid #444; background: #ddd; }
+    main { min-width: 0; padding: 20px; overflow: auto; }
+    .heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid #aaa; }
+    .heading h1 { margin: 0 auto 0 0; font-size: 20px; }
+    .tabs { display: flex; gap: 8px; margin: 14px 0; }
+    .tabs [aria-pressed="true"] { background: #ddd; border-color: #333; }
+    .panel { min-height: 400px; border: 1px solid #999; background: #fff; }
+    .graph-head { display: flex; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid #aaa; }
+    .graph-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; min-height: 380px; }
+    .canvas { padding: 16px; background: #fafafa; }
+    .flow-step { position: relative; max-width: 460px; margin: 12px auto; padding: 10px 14px; border: 1px solid #777; background: #fff; }
+    .flow-step::after { content: "↓"; position: absolute; left: 50%; bottom: -24px; color: #555; }
+    .flow-step:last-child::after { content: ""; }
+    .flow-step span { display: block; color: #555; font-size: 12px; }
+    .trace { margin-left: 10px; padding: 3px 8px; border: 1px dashed #666; }
+    .details { padding: 14px; border-left: 1px solid #aaa; background: #f3f3f3; }
+    .details pre { white-space: pre-wrap; padding: 10px; border: 1px solid #aaa; background: #fff; font: 12px/1.5 Consolas, monospace; }
+    .empty, .error, .loading { margin: 24px; padding: 28px; border: 1px dashed #888; background: #fafafa; }
+    .audit { width: 100%; border-collapse: collapse; }
+    .audit th, .audit td { padding: 10px; border-bottom: 1px solid #bbb; text-align: left; }
+    [hidden] { display: none !important; }
+    @media (max-width: 760px) {
+      body { height: auto; min-height: 100vh; }
+      .topbar { position: sticky; top: 0; z-index: 1; }
+      .layout { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid #aaa; }
+      .skill-list { max-height: 190px; overflow: auto; }
+      main { padding: 14px; }
+      .graph-body { grid-template-columns: 1fr; }
+      .details { border-left: 0; border-top: 1px solid #aaa; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">annot</div>
+    <div>本地 Skill 流程图</div>
+    <div class="status" id="status">127.0.0.1 · 4 个 Skill</div>
+  </header>
+  <div class="layout">
+    <aside aria-label="Skill 库">
+      <h1>Skill 库</h1>
+      <div class="roots"><strong>扫描范围</strong><small>项目 · .agents/skills</small><small>用户 · ~/.agents/skills</small></div>
+      <h2>搜索</h2>
+      <input id="search" type="search" placeholder="名字、描述或正文" aria-label="搜索 Skill">
+      <div class="skill-list">
+        <ul class="list" id="skills">
+          <li><button aria-current="true" data-skill="release-checklist">release-checklist <small>34 节点 · 3 阶段</small></button></li>
+          <li><button data-skill="agent-dev-standards">agent-dev-standards <small>19 节点</small></button></li>
+          <li><button data-skill="challenge">challenge <small>13 节点 · 2 阶段</small></button></li>
+          <li><button data-skill="archery-query">archery-query <small>11 节点</small></button></li>
+        </ul>
+      </div>
+      <div class="empty" id="no-results" hidden>没有匹配的 Skill。可以清空搜索框或刷新扫描范围。</div>
+    </aside>
+    <main>
+      <section class="heading">
+        <h1 id="title">release-checklist</h1>
+        <button id="refresh">刷新扫描</button>
+        <button id="open-html">打开离线图</button>
+      </section>
+      <nav class="tabs" aria-label="主视图">
+        <button data-tab="graph" aria-pressed="true">流程图</button>
+        <button data-tab="audit" aria-pressed="false">整库审计</button>
+      </nav>
+      <section class="panel" id="graph-panel" aria-label="流程图与节点详情">
+        <div class="graph-head"><span>来源：release-checklist/SKILL.md · SHA 8d19c9a2</span><span>34 个节点 · 33 条边</span></div>
+        <div class="graph-body">
+          <div class="canvas" aria-label="流程图示意">
+            <div class="flow-step" tabindex="0"><strong>核对发布分支</strong><span>L8–12 · 你</span></div>
+            <div class="flow-step" tabindex="0"><strong>比较集成分支与发布分支</strong><span>L13–19 · Phase 1</span></div>
+            <div class="flow-step" tabindex="0"><strong>检查 UAT 与 PROD 工单</strong><span>L34–43 · 门禁</span></div>
+            <div class="flow-step" tabindex="0"><strong>生成上线部署 Checklist</strong><span>L61–69 · 产物</span></div>
+          </div>
+          <aside class="details" aria-label="选中节点详情">
+            <h2>节点详情</h2>
+            <p><strong>类型</strong>　核心流程</p>
+            <p><strong>锚点</strong>　L8–12</p>
+            <h2>原文</h2>
+            <pre>确认当前发布分支，并与集成分支比较。若分支已失效，停止后续发布核对。</pre>
+            <button id="copy-context">复制改写上下文</button>
+            <p id="copy-state" role="status"></p>
+          </aside>
+        </div>
+      </section>
+      <section class="panel" id="audit-panel" hidden aria-label="整库审计">
+        <div class="graph-head"><span>已扫描 77 个 Skill</span><span>18 个结构分为 0</span></div>
+        <table class="audit"><thead><tr><th>Skill</th><th>结构分</th><th>低置信</th><th>未绑定分支</th></tr></thead>
+          <tbody><tr><td>feishu-task-creator</td><td>21.0</td><td>4</td><td>3</td></tr><tr><td>release-checklist</td><td>8.0</td><td>2</td><td>0</td></tr></tbody>
+        </table>
+      </section>
+      <section class="panel loading" id="loading-panel" hidden>正在扫描 Skill…</section>
+      <section class="panel error" id="error-panel" hidden role="alert">无法读取 Skill 目录。检查路径后重试扫描。</section>
+    </main>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => {
+      const audit = button.dataset.tab === 'audit';
+      document.querySelectorAll('[data-tab]').forEach((tab) => tab.setAttribute('aria-pressed', String(tab === button)));
+      $('graph-panel').hidden = audit;
+      $('audit-panel').hidden = !audit;
+    }));
+    document.querySelectorAll('[data-skill]').forEach((button) => button.addEventListener('click', () => {
+      document.querySelectorAll('[data-skill]').forEach((item) => item.setAttribute('aria-current', String(item === button)));
+      $('title').textContent = button.dataset.skill;
+    }));
+    $('search').addEventListener('input', (event) => {
+      let visible = 0;
+      document.querySelectorAll('[data-skill]').forEach((button) => {
+        const show = button.dataset.skill.includes(event.target.value.toLowerCase());
+        button.parentElement.hidden = !show;
+        if (show) visible++;
+      });
+      $('no-results').hidden = visible !== 0;
+    });
+    $('refresh').addEventListener('click', () => {
+      $('graph-panel').hidden = true;
+      $('audit-panel').hidden = true;
+      $('loading-panel').hidden = false;
+      window.setTimeout(() => { $('loading-panel').hidden = true; $('graph-panel').hidden = false; }, 650);
+    });
+    $('copy-context').addEventListener('click', async () => {
+      await navigator.clipboard?.writeText('annot context release-checklist.flow.json n-compare');
+      $('copy-state').textContent = '改写上下文已复制';
+    });
+    $('open-html').addEventListener('click', () => { $('copy-state').textContent = '打开这份 Skill 的离线 HTML'; });
+  </script>
+</body>
+</html>

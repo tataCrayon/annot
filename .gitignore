@@ -1,3 +1,8 @@
+.agent/
+.annot/
+.hallmark/
+/$null
+
 node_modules/
 .venv/
 dist/
@@ -13,6 +18,11 @@ sandbox/
 .sandbox/
 tmp/
 data/
+.annot/web-roots.json
+.annot/web-roots.json.*.tmp
+.annot/workbench.json
+.annot/workbench.json.*.tmp
+.annot/workbench-*.log
 
 # ad-hoc probes: rendered pages and screenshots used while tuning the extractor
 .probe/

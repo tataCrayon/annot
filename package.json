@@ -8,26 +8,34 @@
     "node": ">=22.18"
   },
   "bin": {
-    "annot": "./src/cli.ts"
+    "annot": "./bin/annot.ts"
   },
   "exports": {
     ".": "./src/index.ts",
     "./parse": "./src/parse.ts",
     "./flow": "./src/flow.ts",
+    "./analysis": "./src/analysis.ts",
     "./drift": "./src/drift.ts",
     "./audit": "./src/audit.ts",
     "./search": "./src/search.ts",
     "./context": "./src/context.ts",
+    "./improve": "./src/improve.ts",
     "./manifest": "./src/manifest.ts",
     "./render": "./src/render.ts",
     "./visual": "./src/visual.ts",
     "./browser": "./src/browser.ts",
-    "./flow.schema.json": "./schema/flow.schema.json"
+    "./web": "./src/web.ts",
+    "./workbench": "./src/workbench.ts",
+    "./flow.schema.json": "./schema/flow.schema.json",
+    "./analysis.schema.json": "./schema/analysis.schema.json"
   },
   "files": [
+    "bin",
     "src",
     "schema",
     "tools",
+    "web",
+    "docs/assets",
     "test/fixtures",
     "README.md",
     "CONTRIBUTING.md",
@@ -38,7 +46,9 @@
     "skill",
     "flowchart",
     "annotate",
-    "claude-code",
+    "codex",
+    "zcode",
+    "local-web",
     "deepseek-harness",
     "eval"
   ],
@@ -49,6 +59,7 @@
     "check": "node src/cli.ts check",
     "audit": "node src/cli.ts audit",
     "verify": "node src/cli.ts verify",
+    "web": "node src/cli.ts web",
     "render": "node src/cli.ts render"
   }
 }
