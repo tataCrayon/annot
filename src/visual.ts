@@ -120,7 +120,9 @@ const PROBE = `(() => {
     const inner = document.querySelector('.action-overview-inner');
     const innerBox = inner ? inner.getBoundingClientRect() : null;
     const title = document.querySelector('#action-overview-title');
-    const paragraph = document.querySelector('.action-overview-head p');
+    // The kicker is also a <p> and sits above the heading; measuring it here
+    // reports a negative gap on every page that has one.
+    const paragraph = document.querySelector('.action-overview-copy p:not(.action-overview-kicker)');
     const count = document.querySelector('.action-overview-count');
     const status = document.querySelector('.action-overview-status');
     const head = document.querySelector('.action-overview-head');

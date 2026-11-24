@@ -616,12 +616,25 @@ function tempOutFor(skill) {
 }
 
 /** Prefer a validated AI analysis cache; the rule engine is only the fallback. */
+/**
+ * `annotate` refuses to draw a graph without an AI analysis, and the panel has no
+ * model. Inside the panel one extra `--analysis` path is tried (the one the panel
+ * itself writes next to the workbench), and if neither exists the CLI is asked
+ * for the keyword draft explicitly: a panel that silently rendered nothing would
+ * be indistinguishable from a broken install. The draft says `规则草案` on every
+ * card, so the fallback is visible rather than hidden.
+ */
 function analysisArgs(skill, cwd) {
   const path = String(skill);
   const skillDir = path.endsWith('SKILL.md') ? dirname(path) : path;
   const name = basename(skillDir);
-  const analysis = resolve(cwd ?? process.cwd(), '.annot', 'analyses', `${name}.analysis.json`);
-  return existsSync(analysis) ? ['--analysis', analysis] : [];
+  const base = cwd ?? process.cwd();
+  const candidates = [
+    resolve(base, '.annot', 'analyses', `${name}.analysis.json`),
+    resolve(base, '.annot', name, 'analyses', `${name}.analysis.json`),
+  ];
+  const found = candidates.find((file) => existsSync(file));
+  return found ? ['--analysis', found] : ['--rules'];
 }
 
 export function apply(ctx, config) {

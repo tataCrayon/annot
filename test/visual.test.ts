@@ -77,6 +77,15 @@ test('the checked viewports are the documented set', () => {
   assert.deepEqual(VIEWPORTS, [[1440, 900], [1600, 1000], [1920, 1080], [2048, 1320]]);
 });
 
+test('the summary kicker does not count as the description it sits above', async () => {
+  // The spacing rule asks "is the description too close to the title?" and the
+  // kicker is a <p> sitting *above* the title, so selecting the first <p>
+  // reports a negative gap on every page and turns a layout check into a
+  // permanently failing one.
+  const source = await readFile(join(here, '..', 'src', 'visual.ts'), 'utf8');
+  assert.match(source, /action-overview-copy p:not\(\.action-overview-kicker\)/);
+});
+
 test('a real render passes every viewport', { skip: browserless && 'no Chrome/Chromium/Edge on this machine' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'annot-visual-'));
   try {

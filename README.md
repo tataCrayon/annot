@@ -3,9 +3,9 @@
 **Inspect, evaluate, and optimize Agent Skills across tools.**<br>
 把 `SKILL.md` 拆成带源码锚点的动作图，汇总整库问题，生成宿主 Agent 可执行的优化任务，并保存可比较的版本快照。
 
-[![Version](https://img.shields.io/badge/version-0.1.0-9f451f)](#快速开始)
+[![Version](https://img.shields.io/badge/version-0.2.0-9f451f)](#快速开始)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.18-2f6f4e)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-242%20passing-2f6f4e)](#隔离测试)
+[![Tests](https://img.shields.io/badge/tests-268%20passing-2f6f4e)](#隔离测试)
 [![Local first](https://img.shields.io/badge/data-local--first-9f451f)](#设计约束故意不做的事)
 [![License](https://img.shields.io/badge/license-MIT-4b5550)](LICENSE)
 
@@ -16,6 +16,7 @@
 - [界面预览](#界面预览)
 - [多工具支持](#多工具支持)
 - [核心能力](#核心能力)
+- [0.2.0 改了什么](#020-改了什么)
 - [快速开始](#快速开始)
 - [从自然语言到评估闭环](#从自然语言到评估闭环)
 - [AI-first 语义分析](#ai-first-语义分析)
@@ -49,10 +50,23 @@
 - **源码锚定**：每张动作卡绑定精确行范围与行哈希，图可以追溯到原文。
 - **AI-first 分析**：AI 判断动作、门禁、判断、产物与说明关系；CLI 负责契约校验和确定性渲染。
 - **规范与评估分离**：加载规范、本地引用、孤立说明和结构问题可直接检查；行为效果必须运行 baseline 与 Skill 对照后才计分。
+- **诊断 → 修复任务**：未通过项直接变成带逐字摘录、行号和验收条件的宿主修复任务；`annot repair` 与网页三处入口调用同一份文本。
 - **整库评估**：一次汇总全部 Skill 的阻断和建议问题，支持筛选及 Markdown/JSON 报告导出。
 - **优化任务回环**：自动建立优化前快照，生成带报告路径、问题清单和验收要求的 Codex/DSH/ZCode 任务。
 - **版本管理**：保留 Skill 原文与内容哈希，按内容指纹合并重复记录，比较新增、修改和移除项。
 - **本地优先**：工作台只监听 `127.0.0.1`，不上传 Skill 内容，也不在浏览器里直接写 Skill 源文件。
+
+## 0.2.0 改了什么
+
+这一版把「看」和「改」之间的断点补上了，并且把图彻底交给 AI 分析：
+
+- **动作图只由 AI 分析生成**。网页不再在没有分析时静默回退到关键词草案；`annot annotate` 没有 `--analysis` 直接拒绝，`--rules` 只能显式索要。`annot analyze` 一条命令写出分析任务，打印的就是工作台读取的那个提案路径——两处路径曾经不一致，导致分析写成功、页面照样空白。
+- **分析过期会被明确指出**。改过 `SKILL.md` 后旧提案的源 hash 对不上，网页显示「语义分析已过期」并给出两版 sha，`annot annotate` 报 `source hash mismatch`；此前它落到通用 400，页面只说 `invalid request`。修复任务的验收里写明：改完必须重做分析，因为锚点是按旧字节算的。
+- **诊断可直接转成修复任务**。`annot repair` 与 `POST /api/brief { mode: "repair" }` 输出同一份文本，每项带当前原文的逐字摘录、行号、改法和可复跑的通过条件；没定位到行的检查明说「位置未定位」，不许猜。
+- **泳道是布局的一部分**。`lane` 不再只印在卡片角上：工具与读者步骤进动作列，门禁与说明进上下文列，连续同泳道成带并标人数。
+- **工作台是后台进程，所以要认代码指纹**。`GET /api/status` 报 `build`，`annot workbench status` 同时报 `currentBuild`，指纹不符时 `workbench open` 自动重启受管实例——「改了没生效」从此只有两种答案：旧进程或真 bug。
+
+完整的分轮记录见 [`docs/00-status.md`](docs/00-status.md)。
 
 ---
 ## 为什么源码锚点重要
@@ -87,16 +101,27 @@ annot workbench open
 工作台默认扫描 Codex、Claude Code、Cursor、GitHub Copilot、Gemini CLI、OpenCode、DSH 与 ZCode 的常见 Skill 目录。也可以先用 CLI 标注单个 Skill：
 
 ```bash
-# 标注一个 skill（默认写到 <skill>/.annot/<name>/）
-annot annotate path/to/my-skill
+# 动作图只能由 AI 语义分析生成，所以第一步是拿到分析任务
+annot analyze path/to/my-skill
+#   写出 .annot/my-skill/analysis-task.md，并打印 AI 结果要保存的路径：
+#   .annot/analyses/my-skill.analysis.json（工作台默认读这个目录）
+
+# 宿主 AI 读完任务把 JSON 写到那个路径后，验证并渲染图
+annot annotate path/to/my-skill \
+  --analysis .annot/analyses/my-skill.analysis.json \
+  --out .annot/my-skill-graph
 
 # 得到两个文件
-#   .annot/my-skill/my-skill.flow.json   ← 数据，可进 git
-#   .annot/my-skill/my-skill.html        ← 单文件，双击即开，无网络无依赖
+#   .annot/my-skill-graph/my-skill.flow.json   ← 数据，可进 git
+#   .annot/my-skill-graph/my-skill.html        ← 单文件，双击即开，无网络无依赖
 
 # 改完 SKILL.md 后检查锚点是否还成立
-annot check path/to/my-skill/.annot/my-skill/my-skill.flow.json
+annot check .annot/my-skill-graph/my-skill.flow.json --skill path/to/my-skill/SKILL.md
 ```
+
+改过源文件后，旧的分析提案会因源 hash 不匹配被拒绝（`annot annotate --analysis` 报 `source hash mismatch`，网页显示「语义分析已过期」）。这是设计：节点锚点指向的字节已经变了。重做一次 `annot analyze` + `annot annotate` 就恢复。
+
+不带 `--analysis` 的 `annotate` 会拒绝执行：图的节点、顺序和泳道都由分析给出，规则草案在屏幕上和真分析长得一样，所以它不再作为默认或兜底。迁移与回归需要旧规则时显式加 `--rules`。
 
 `check` 的退出码就是结论：`0` 全部同步，`1` 有漂移（并逐条列出 `node id`、`moved 65 → 67` 或 `broken`）。
 
@@ -158,6 +183,27 @@ node src/cli.ts review path/to/my-skill --json
 
 有阻断项时命令退出 `1`，只有建议项时退出 `0`。这部分回答“Skill 是否符合规范、是否容易被加载”，不回答“Skill 是否有效”。行为效果仍要通过下一节的隔离对照实验验证。
 
+### 从诊断直接生成修复任务
+
+诊断出问题之后，下一步不该是“再生成一份评估任务”。`annot repair` 把每一条未通过项变成可执行的修复任务：它引用**当前原文的逐字摘录和行号**，给出这一项的改法，并写死验收条件（`annot review` 里该项变成 pass，且没有别的项退化成 fail）。
+
+```bash
+node src/cli.ts repair path/to/my-skill                      # 全部未通过项
+node src/cli.ts repair path/to/my-skill --check note-coverage # 只修一项
+node src/cli.ts repair path/to/my-skill --json                # 机器可读
+```
+
+三条硬约束写在任务里，因为它们是修复最容易走偏的地方：
+
+- **不编造位置**：检查项没定位到行时，任务明说“位置未定位”，要求宿主先 `annot review --json` 找行；猜一个行号会让改动落到别的段落。
+- **不许靠删除过检**：为了把检查项清零而删内容、缩正文、删链接，等同于没修。
+- **不把静态通过讲成效果变好**：行为效果仍需隔离对照运行，没跑就是“未测”。
+
+判断口径也一并收紧了：Agent Skills 规范只要求 `description` 非空且 ≤1024 字符，并未禁止尖括号；`<`/`>` 在宿主展示时会被转义，因此现在记为**建议**而不是阻断——此前 `hallmark` 的 `` `/hallmark redesign <path>` `` 被误判为阻断。
+
+`--check` 指向一个已经通过的项会退出 `1` 并说明原因——这通常意味着调用方看到的是旧文件，掩盖它比报错更糟。工作台的三处入口（就绪卡片、单条未通过项、整库问题列表）都调用同一个 `POST /api/brief { mode: "repair" }`，任务文本与命令行逐字一致。
+
+
 ### 评估并优化整个 Skill
 
 点 Skill 标题旁的「评估与优化」，写清楚要验证的能力，再复制生成的计划。计划要求：
@@ -178,8 +224,8 @@ node src/cli.ts review path/to/my-skill --json
 节点类型、动作概括、门禁、产物、分支和说明关系由 AI 阅读整份 Skill 后判断。CLI 不内置模型提供商，只负责生成带行号的 AI 任务、验证 AI 提案、计算布局和渲染产物。
 
 ```bash
-# 1. 生成包含逐行源码和 JSON 契约的分析任务
-annot ai-prompt path/to/my-skill --out .annot/analyses/my-skill.analysis-task.md
+# 1. 生成包含逐行源码、主干契约、泳道契约和 JSON 的分析任务
+annot analyze path/to/my-skill
 
 # 2. 宿主 AI 输出 analysis.json 后，验证并渲染
 annot annotate path/to/my-skill \
@@ -189,11 +235,13 @@ annot annotate path/to/my-skill \
 
 AI 提案中的每个节点必须给出 `start/end` 和逐字一致的 `quote`。CLI 会拒绝源文件 hash 不匹配、引文不一致、重复 id、悬空边和自相矛盾的说明范围。确定性层只守证据边界，不替 AI 做语义分类。完整架构见 [`docs/ai-first-analysis.md`](docs/ai-first-analysis.md)。
 
-本地网页默认从 `.annot/analyses/<skill>.analysis.json` 读取已验证提案，并以 `AI 语义分析` 标记；没有提案时才显示标为 `规则草案` 的兼容预览。网页的「AI 重建动作图」按钮直接生成可复制给 Codex/DSH 的分析任务。
+本地网页默认从 `.annot/analyses/<skill>.analysis.json` 读取已验证提案，`annot analyze` 打印的也是这个路径——两处必须是同一个文件，否则分析写成功、页面照样空。没有提案时网页不画图：它显示「生成 AI 分析任务」空态并给出结果应写入的路径，因为一份关键词草案放到同一张画布上以后，读图的人无法分辨它是不是分析。空的提示框里也有「复制分析任务」，不需要先切到别的页面。
 
-### 兼容的规则草案
+任务可以「保存为任务文件」：网页把任务写到 `.annot/tasks/`，并显示一行 `claude -p "$(cat …)"` 命令。网页仍然不启动任何进程、不写 Skill 源文件，用户自己决定在哪运行。剪贴板复制仍然保留。
 
-不带 `--analysis` 的 `annotate` 仍运行旧规则引擎，为历史图、fixture 和迁移提供回归基线。它的结果标为 `source.method: "rules"`，只是**规则草案**，不作为新的语义分析结论。
+### 规则草案（仅迁移与回归）
+
+`annot annotate --rules` 才运行旧的规则引擎，为历史图和 fixture 提供回归基线。它的结果标为 `source.method: "rules"`，只是**规则草案**，不作为新的语义分析结论；网页不会显示它。
 
 | 层 | 做什么 | 不做什么 |
 |---|---|---|
@@ -345,11 +393,14 @@ annot verify .annot/my-skill/my-skill.flow.json
 
 | 命令 | 作用 |
 |---|---|
-| `annot annotate <dir\|SKILL.md>` | 产出 `flow.json` + `html` + `annotation.json`（原子写入） |
+| `annot analyze <dir\|SKILL.md>` | 写出 `.annot/<skill>/analysis-task.md`，打印分析结果要保存的路径（`.annot/analyses/<skill>.analysis.json`，即工作台读取的位置） |
+| `annot annotate <dir\|SKILL.md> --analysis <json>` | 验证分析并产出 `flow.json` + `html` + `annotation.json`（原子写入）；`--rules` 才用旧规则草案 |
 | `annot check <flow.json>` | 对比当前 SKILL.md，报漂移；exit 0/1 |
 | `annot list <root...>` | 列 skill，同名按 rank 去重 |
 | `annot search <query...> -- <root...>` | 按名字/描述/标题找 skill，`--body` 加搜正文 |
 | `annot audit <root...>` | 批量体检，按"抽得有多差"排序 |
+| `annot review <dir\|SKILL.md>` | 静态规范检查；有阻断项 exit 1 |
+| `annot repair <dir\|SKILL.md>` | 把未通过项变成带行号原文与验收条件的宿主修复任务；`--check <id>` 只修一项 |
 | `annot context <flow.json> <node-id>` | 交出编辑所需的精确切片与约束 |
 | `annot verify <flow.json\|html>` | 真浏览器验收；exit 0/1/2（2 = 跳过） |
 | `annot render <flow.json>` | 只重渲染 HTML |
@@ -449,7 +500,7 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 
 工作台顶部分成三个入口：
 
-- **Skill 库**：保留单个 Skill 的动作图、卡片上下文、自然语言修改和评估。
+- **Skill 库**：保留单个 Skill 的动作图。点选任意卡片后，右侧只展示这张卡片的原文、事实、自然语言修改与「设计 Skill 评估」；没有独立的节点列表或节点搜索。
 - **annot 系统 Skill**：左侧单独展示插件自带的 `annot`、`annot-analysis`、`annot-evaluation`；使用 `source=system` 独立读取，不会混入用户 Skill 库，也不受同名用户 Skill 影响。
 - **整库评估**：用一次请求汇总全部 Skill 的发现、静态规范、资源引用、孤立说明和抽取结构问题。报告可下载为 Markdown 或 JSON；行为效果在真实对照运行前始终显示“未测”。
 - **版本管理**：把当前 Skill 库保存为本地快照，相同内容指纹会合并为一个版本并保留记录次数；可选择任意两次快照比较新增、修改或移除的 Skill，并生成宿主恢复任务。
@@ -477,7 +528,7 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 242 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 268 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

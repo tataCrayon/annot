@@ -280,7 +280,37 @@ window.__ModuleLoader__.load({
           svg.appendChild(el('path', attrs));
         }
 
+        // A note hangs off the card it explains: one hairline from the owner's
+        // left edge to the note's left edge. Without it the step-in reads as an
+        // indentation for no reason; with it the note is visibly attached to
+        // exactly one card. The note still names its relation in its header, so
+        // the relation itself is never left to the line.
+        const placed = new Map();
+        for (const node of layout.nodes) placed.set(node.id, node);
+        for (const node of layout.nodes) {
+          if (!node.explains) continue;
+          const owner = placed.get(node.explains);
+          if (!owner) continue;
+          const fromY = owner.y + owner.h;
+          const toY = node.y - 1;
+          if (toY <= fromY) continue;
+          const x = node.x + 7;
+          svg.appendChild(el('path', {
+            class: 'annot-note-connector',
+            d: `M ${x} ${fromY} L ${x} ${toY - 5} L ${node.x + (node.inset || 0) - 1} ${toY - 5}`,
+            fill: 'none',
+            stroke: 'var(--dsw-alias-label-tertiary)',
+            'stroke-width': 1,
+            'stroke-dasharray': '2 3',
+            opacity: 0.55,
+          }));
+        }
+
         for (const association of layout.associations || []) {
+          const source = placed.get(association.from);
+          // An attached note is already drawn under its owner; a page-wide
+          // dashed line would say the same thing twice and cut through cards.
+          if (source && source.home === 'attached') continue;
           svg.appendChild(el('path', {
             class: 'annot-assoc',
             d: association.d,
@@ -289,10 +319,14 @@ window.__ModuleLoader__.load({
         }
 
         for (const node of layout.nodes) {
+          // A note's box is its owner's column; only the plate steps in, so
+          // every card in a column still starts at one x.
+          const inset = node.inset || 0;
+          const plateW = node.w - inset;
           const group = el('g', {
-            class: `annot-node${selected === node.id ? ' sel' : ''}`,
+            class: `annot-node${selected === node.id ? ' sel' : ''}${node.home === 'attached' ? ' note-attached' : ''}`,
             'data-id': node.id,
-            transform: `translate(${node.x} ${node.y})`,
+            transform: `translate(${node.x + inset} ${node.y})`,
             // The graph is the primary reading surface; keyboard access is not
             // optional decoration. tabindex + role + Enter/Space mirror a button.
             tabindex: '0',
@@ -313,13 +347,19 @@ window.__ModuleLoader__.load({
           // urgent, which is the opposite of what a flow is for.
           const clipId = `annot-card-clip-${node.id}`;
           const clip = el('clipPath', { id: clipId });
-          clip.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: cardH, rx: 14, ry: 14 }));
+          clip.appendChild(el('rect', { x: 0, y: 0, width: plateW, height: cardH, rx: 14, ry: 14 }));
           group.appendChild(clip);
-          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: node.w, height: cardH, rx: 14, ry: 14, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
-          group.appendChild(el('rect', { x: 0, y: 0, width: node.w, height: 3, 'clip-path': `url(#${clipId})`, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
+          group.appendChild(el('rect', { class: 'annot-card', x: 0, y: 0, width: plateW, height: cardH, rx: 14, ry: 14, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-primary)', 'stroke-width': 1 }));
+          group.appendChild(el('rect', { x: 0, y: 0, width: plateW, height: 3, 'clip-path': `url(#${clipId})`, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` }));
 
+          // A note's header names its relation to the card it hangs under, so
+          // "说明 · 约束门禁" answers "why is this rule here" without a legend.
           const typeWord = el('text', { x: 12, y: 17, 'font-size': 10.5, fill: `var(${TYPE_VAR[node.type] || '--annot-stage'})` });
-          typeWord.textContent = node.type === 'note' && NOTE_ROLE_LABEL[node.noteRole] ? `${TYPE_LABEL.note} · ${NOTE_ROLE_LABEL[node.noteRole]}` : TYPE_LABEL[node.type] || node.type;
+          typeWord.textContent = node.type === 'note'
+            ? node.home === 'attached'
+              ? `说明 · ${ASSOCIATION_LABEL[node.relation] || '依附'}`
+              : node.home === 'global' ? '说明 · 全局' : node.home === 'loose' ? '说明 · 孤立' : (NOTE_ROLE_LABEL[node.noteRole] ? `说明 · ${NOTE_ROLE_LABEL[node.noteRole]}` : '说明')
+            : TYPE_LABEL[node.type] || node.type;
           group.appendChild(typeWord);
 
           // The layout already wrapped the label, so the panel cannot disagree

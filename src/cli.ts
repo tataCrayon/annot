@@ -10,7 +10,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { auditRoots, formatAudit } from './audit.ts';
-import { buildAnalysisPrompt, buildEvaluationPrompt, buildFlowFromAnalysis, parseAnalysisProposal } from './analysis.ts';
+import { buildAnalysisPrompt, buildEvaluationPrompt, buildFlowFromAnalysis, parseAnalysisProposal, proposalFileName, StaleAnalysisError } from './analysis.ts';
 import { buildEditContext, formatEditContext } from './context.ts';
 import { diagnose, formatDiagnosis } from './diag.ts';
 import { detectDrift } from './drift.ts';
@@ -22,7 +22,8 @@ import { buildFlow } from './flow.ts';
 import { parseSkill, slugify } from './parse.ts';
 import { layoutNodes, renderHtml } from './render.ts';
 import { formatSearch, searchSkills } from './search.ts';
-import { evaluationMethodology, formatStandardReport, reviewSkillFile } from './standards.ts';
+import { evaluationMethodology, formatStandardReport, reviewSkillFile, reviewSkillSource } from './standards.ts';
+import { buildRepairPlan, formatRepairTask, unresolvedCheckIds } from './repair.ts';
 import { loadWebRoots, startWebServer, webRootConfigPath, webRoots } from './web.ts';
 import { DEFAULT_WORKBENCH_PORT, openWorkbench, stopWorkbench, workbenchStatus } from './workbench.ts';
 import type { FlowDoc, Sidecar } from './types.ts';
@@ -30,14 +31,17 @@ import type { FlowDoc, Sidecar } from './types.ts';
 const USAGE = `annot — annotate any agent skill
 
 Usage
-  annot annotate <skill-dir|SKILL.md> [--analysis <json>] [--out <dir>] [--sidecar <json>] [--json]
-  annot ai-prompt <skill-dir|SKILL.md> [--out <file>] [--json]
+  annot annotate <skill-dir|SKILL.md> --analysis <json> [--out <dir>] [--sidecar <json>] [--json]
+                 ... 加 --rules 时才用关键词规则草案（迁移与回归专用）
+  annot analyze <skill-dir|SKILL.md> [--out <file>] [--json]   the one-command entry
+  annot ai-prompt <skill-dir|SKILL.md> [--out <file>] [--json]   same task, explicit
   annot ai-evaluate <skill-dir|SKILL.md> [--intent <text>] [--metrics <id,...>] [--out <file>] [--json]
   annot check <flow.json> [--skill <SKILL.md>] [--json]
   annot list <root...> [--json]
   annot search <query...> <root...> [--body] [--json]
   annot audit <root...> [--limit <n>] [--json]
   annot review <skill-dir|SKILL.md> [--json]
+  annot repair <skill-dir|SKILL.md> [--check <id,...>] [--intent <text>] [--out <file>] [--json]
   annot context <flow.json> <node-id> [--json]
   annot render <flow.json> [--out <file>]
   annot verify <flow.json|html> [--json] [--shot <dir>]
@@ -49,9 +53,11 @@ Usage
 Options
   --out <dir|file>   where to write (default: .annot/ next to SKILL.md)
   --sidecar <json>   human calibration file (annot.sidecar.json)
-  --analysis <json>  validated AI analysis proposal for annotate
-  --intent <text>    evaluation objective for ai-evaluate
+  --analysis <json>  validated AI analysis proposal for annotate (required unless --rules)
+  --rules            legacy keyword extraction; the graph is a draft, not an analysis
+  --intent <text>    evaluation objective for ai-evaluate; extra instructions for repair
   --metrics <csv>    evaluation metric ids for ai-evaluate
+  --check <ids>      only these standard checks for repair (comma separated)
   --analysis-dir <dir> directory of cached <skill>.analysis.json files for web
   --root-config <file> persisted webpage Skill-root configuration (default: .annot/web-roots.json)
   --snapshot-dir <dir>  local Skill snapshots used by version management (default: .annot/snapshots)
@@ -75,6 +81,8 @@ export async function main(argv: string[]): Promise<number> {
   switch (command) {
     case 'annotate':
       return annotate(rest);
+    case 'analyze':
+      return analyze(rest);
     case 'ai-prompt':
       return aiPrompt(rest);
     case 'ai-evaluate':
@@ -89,6 +97,8 @@ export async function main(argv: string[]): Promise<number> {
       return audit(rest);
     case 'review':
       return review(rest);
+    case 'repair':
+      return repair(rest);
     case 'context':
       return context(rest);
     case 'render':
@@ -100,7 +110,7 @@ export async function main(argv: string[]): Promise<number> {
     case 'workbench':
       return workbench(rest);
     case 'version':
-      process.stdout.write('annot 0.1.0\n');
+      process.stdout.write('annot 0.2.0\n');
       return 0;
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
@@ -196,8 +206,10 @@ function parse(argv: string[], known: string[]): { values: Record<string, string
       out: { type: 'string' },
       sidecar: { type: 'string' },
       analysis: { type: 'string' },
+      rules: { type: 'boolean', default: false },
       intent: { type: 'string' },
       metrics: { type: 'string' },
+      check: { type: 'string' },
       'analysis-dir': { type: 'string' },
       'root-config': { type: 'string' },
       skill: { type: 'string' },
@@ -230,6 +242,56 @@ async function review(argv: string[]): Promise<number> {
     return 1;
   }
 }
+async function repair(argv: string[]): Promise<number> {
+  const { values, positionals } = parse(argv, []);
+  const target = positionals[0];
+  if (!target) {
+    process.stderr.write('repair needs a skill directory or SKILL.md path\n');
+    return 1;
+  }
+  try {
+    const { report, source } = await reviewSkillSource(target);
+    const checkIds = String(values.check ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+    const known = new Set(report.checks.map((check) => check.id));
+    const unknown = checkIds.filter((id) => !known.has(id));
+    if (unknown.length) {
+      process.stderr.write(`unknown check id: ${unknown.join(', ')}\nknown: ${[...known].join(', ')}\n`);
+      return 1;
+    }
+    const extra = values.intent as string | undefined;
+    // Same convention as `analyze` and the workbench: proposals live under the
+    // working directory's `.annot/analyses`, not next to the Skill, so a repair
+    // task can name the exact file the page will read afterwards.
+    const analysisPath = join(process.cwd(), '.annot', 'analyses', `${slugify(report.skill)}.analysis.json`);
+    const plan = buildRepairPlan(report, source, {
+      checkIds,
+      note: extra?.trim() ? String(extra).slice(0, 8000) : undefined,
+      analysisPath,
+    });
+    const stale = unresolvedCheckIds(report, plan, checkIds);
+    if (stale.length) {
+      // Asking to repair a check that already passes means the caller's view of
+      // the file is stale; saying "nothing to do" would hide that.
+      process.stderr.write(`not failing, nothing to repair: ${stale.join(', ')}\n`);
+      return 1;
+    }
+    const task = formatRepairTask(plan);
+    const out = values.out as string | undefined;
+    let artifact;
+    if (out) artifact = await atomicWrite(resolve(out), task);
+    if (values.json) {
+      process.stdout.write(`${JSON.stringify({ skill: plan.skill, file: plan.file, source_sha: plan.sha, readiness: plan.readiness, targets: plan.targets.map((item) => ({ id: item.check.id, status: item.check.status, artifact: item.artifact, lines: item.check.lines ?? [] })), unfixable: plan.unfixable.map((check) => check.id), out: artifact?.path, task })}\n`);
+    } else {
+      process.stdout.write(task);
+      if (artifact) process.stderr.write(`task ${artifact.path}\n`);
+    }
+    return 0;
+  } catch (error) {
+    process.stderr.write(`cannot repair ${resolve(target)}: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
 async function annotate(argv: string[]): Promise<number> {
   const { values, positionals } = parse(argv, []);
   const target = positionals[0];
@@ -254,14 +316,35 @@ async function annotate(argv: string[]): Promise<number> {
   if (analysisPath) {
     try {
       const raw = await readFile(resolve(analysisPath), 'utf8');
-      doc = buildFlowFromAnalysis(text, parseAnalysisProposal(raw), options);
+      doc = buildFlowFromAnalysis(text, parseAnalysisProposal(raw), { ...options, analysisPath: resolve(analysisPath) });
     } catch (error) {
+      if (error instanceof StaleAnalysisError) {
+        process.stderr.write(`${error.message}\nre-analyse the current ${basename(file)}: the old analysis was written for a different version of the file\n`);
+        return 1;
+      }
       process.stderr.write(`cannot use analysis ${resolve(analysisPath)}: ${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
-  } else {
+  } else if (values.rules) {
     const sidecar = await loadSidecar(values.sidecar as string | undefined, dirname(file));
     doc = buildFlow(skill, text, { ...options, sidecar });
+  } else {
+    // A graph drawn from keyword rules guesses which paragraph is a step, which
+    // is the thing this tool exists to stop guessing about. The rule extractor
+    // stays for fixtures and migration, but it has to be asked for by name.
+    process.stderr.write(
+      [
+        'annotate needs an AI analysis: --analysis <json>',
+        '',
+        '  1. annot ai-prompt ' + target + ' --out .annot/analysis-task.md',
+        '  2. 让宿主 AI 读任务并把提案写到 .annot/analyses/<skill>.analysis.json',
+        '  3. annot annotate ' + target + ' --analysis .annot/analyses/<skill>.analysis.json',
+        '',
+        '旧的关键词规则草案只在迁移/回归时需要：加 --rules。它不会被当成分析结果。',
+        '',
+      ].join(String.fromCharCode(10)),
+    );
+    return 1;
   }
 
   const outDir = resolveOut(values.out as string | undefined, dirname(file), skill.name);
@@ -300,6 +383,72 @@ async function annotate(argv: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * The one command a user has to remember.
+ *
+ * A graph comes from an AI analysis, and producing one used to take three
+ * remembered steps (`ai-prompt`, save the JSON, `annotate --analysis`). This
+ * command writes the analysis task next to the Skill and prints the exact path
+ * the host agent must fill in, so the contract between "I want a graph" and
+ * "here is the JSON to submit" is one invocation rather than a wiki page.
+ */
+async function analyze(argv: string[]): Promise<number> {
+  const { values, positionals } = parse(argv, []);
+  const target = positionals[0];
+  if (!target) {
+    process.stderr.write('analyze needs a skill directory or SKILL.md path\n');
+    return 1;
+  }
+  const file = target.endsWith('.md') ? resolve(target) : join(resolve(target), 'SKILL.md');
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    process.stderr.write(`cannot read ${file}\n`);
+    return 1;
+  }
+  const skill = parseSkill(text);
+  // Two different directories, on purpose. The task itself is per-Skill scratch
+  // (`.annot/<skill>/analysis-task.md`), but the proposal must land where the
+  // workbench reads it: `annot web` serves `.annot/analyses/<skill>.analysis.json`
+  // by default. Pointing the host at a second, nested `analyses` directory made
+  // the analysis succeed and the page stay empty, which reads as a broken graph
+  // rather than a path the host was told to use.
+  const dir = join(process.cwd(), '.annot', slugify(skill.name));
+  const analysisPath = join(process.cwd(), '.annot', 'analyses', proposalFileName(skill.name));
+  const analysisDir = dirname(analysisPath);
+  const taskPath = typeof values.out === 'string' ? resolve(values.out) : join(dir, 'analysis-task.md');
+  // The submission path belongs in the task, not in a README the agent will not
+  // read: the model gets one document that says exactly where its JSON goes,
+  // and the task derived from it is under the same `.annot` root as this file.
+  const task = [
+    buildAnalysisPrompt(text, file, { analysisPath }),
+    '',
+    '## 提交路径',
+    `把 JSON 原样写到 ${analysisPath}，然后运行上面的 annot annotate --analysis 命令生成图。`,
+    '工作台只读这一个文件；写到别处等于没有分析，页面仍然不画图。',
+    '',
+  ].join('\n');
+  await mkdir(dirname(taskPath), { recursive: true });
+  await mkdir(analysisDir, { recursive: true });
+  await atomicWrite(taskPath, task);
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify({ skill: skill.name, task: taskPath, analysis: analysisPath, ready: false })}\n`);
+  } else {
+    process.stdout.write(
+      [
+        `analysis task  ${taskPath}`,
+        `submit to      ${analysisPath}`,
+        '',
+        `1. 把 ${taskPath} 交给宿主 AI`,
+        `2. 让它把结果 JSON 写到 ${analysisPath}`,
+        `3. annot annotate ${target} --analysis ${analysisPath}`,
+        '',
+      ].join('\n'),
+    );
+  }
+  return 0;
+}
 async function aiPrompt(argv: string[]): Promise<number> {
   const { values, positionals } = parse(argv, []);
   const target = positionals[0];

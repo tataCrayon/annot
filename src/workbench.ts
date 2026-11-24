@@ -1,9 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, openSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { buildSignature } from './web.ts';
+
+const SOURCE_DIR = dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_WORKBENCH_PORT = 8787;
 export interface WorkbenchOptions {
@@ -31,6 +35,10 @@ export interface WorkbenchStatus {
   port: number;
   pid?: number;
   instanceId?: string;
+  /** What the running process loaded; compare with `currentBuild()` after a pull. */
+  build?: string;
+  /** The code on disk right now. Differs from `build` until the workbench restarts. */
+  currentBuild?: string;
   skills?: number;
   roots?: number;
   record?: WorkbenchRecord;
@@ -46,6 +54,8 @@ interface ApiStatus {
   host?: string;
   pid?: number;
   instanceId?: string;
+  /** Fingerprint of the code the running server loaded, not of the code on disk. */
+  build?: string;
   skills?: number;
   roots?: unknown[];
 }
@@ -56,10 +66,23 @@ export async function openWorkbench(options: WorkbenchOptions = {}): Promise<Ope
   const recordPath = workbenchRecordPath(cwd);
   const current = await inspectWorkbench(port, cwd);
   if (current.running) {
+    // A managed daemon that loaded different code than what is on disk is stale:
+    // reusing it means the browser runs the new page against an old layout, and
+    // the only visible symptom is "the fix did not work". Restart it; a server
+    // this process did not start is left alone and reported instead.
+    if (current.managed && current.build !== undefined && current.build !== current.currentBuild) {
+      await stopWorkbench({ port, cwd, timeoutMs: options.timeoutMs });
+      const restarted = await startWorkbench(options, port, cwd, recordPath);
+      return restarted;
+    }
     if (current.record && current.pid !== undefined && current.record.pid !== current.pid) await removeRecord(recordPath);
     const opened = await openIfRequested(options, current.url);
     return { ...current, started: false, opened, logPath: workbenchLogPath(cwd, port) };
   }
+  return startWorkbench(options, port, cwd, recordPath);
+}
+
+async function startWorkbench(options: WorkbenchOptions, port: number, cwd: string, recordPath: string): Promise<OpenWorkbenchStatus> {
   if (await portOccupied(port)) throw new Error(`port ${port} is already used by a service that is not an annot workbench`);
   await mkdir(dirname(recordPath), { recursive: true });
   const logPath = workbenchLogPath(cwd, port);
@@ -150,7 +173,19 @@ async function inspectWorkbench(port: number, cwd: string): Promise<WorkbenchSta
   const record = await readRecord(workbenchRecordPath(cwd));
   const api = await probe(url);
   if (!api) return { running: false, managed: false, url, port, record };
-  return { running: true, managed: Boolean(record?.instanceId && record.instanceId === api.instanceId), url, port, pid: api.pid, instanceId: api.instanceId, skills: api.skills, roots: Array.isArray(api.roots) ? api.roots.length : undefined, record };
+  return {
+    running: true,
+    managed: Boolean(record?.instanceId && record.instanceId === api.instanceId),
+    url,
+    port,
+    pid: api.pid,
+    instanceId: api.instanceId,
+    build: api.build,
+    currentBuild: currentBuild(),
+    skills: api.skills,
+    roots: Array.isArray(api.roots) ? api.roots.length : undefined,
+    record,
+  };
 }
 
 async function probe(url: string): Promise<ApiStatus | undefined> {
@@ -160,6 +195,24 @@ async function probe(url: string): Promise<ApiStatus | undefined> {
     const value = await response.json() as ApiStatus;
     return value.host === '127.0.0.1' && typeof value.instanceId === 'string' ? value : undefined;
   } catch { return undefined; }
+}
+
+/**
+ * The fingerprint the code on disk would produce right now.
+ *
+ * Both files are read from disk explicitly: `web.ts` computes its own stamp from
+ * the copy it loaded, and a daemon's answer must be comparable to the files as
+ * they are *now*. The hash itself has one implementation, in `web.ts`.
+ */
+export function currentBuild(): string {
+  const source = (name: string) => {
+    try {
+      return readFileSync(join(SOURCE_DIR, name), 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  return buildSignature(source('web.ts'), source('render.ts'));
 }
 
 async function portOccupied(port: number): Promise<boolean> {

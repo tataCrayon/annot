@@ -19,6 +19,17 @@ export interface LibraryIssue {
   title: string;
   detail: string;
   evidence?: string;
+  /**
+   * The standard check that produced this issue, when there is one.
+   *
+   * Without it the report could say "this skill is blocked" but the panel had
+   * no way to ask for the repair of *that* check — it could only fall back to a
+   * whole-Skill task. Extraction issues keep it undefined because they have no
+   * standard check to re-run.
+   */
+  check?: string;
+  /** 1-based source lines, when the check located them. */
+  lines?: Array<{ start: number; end: number }>;
 }
 
 export interface LibrarySkillReport {
@@ -63,6 +74,8 @@ function standardIssue(skill: string, file: string, check: StandardCheck): Libra
     title: check.title,
     detail: check.detail,
     evidence: check.evidence,
+    check: check.id,
+    lines: check.lines,
   };
 }
 
@@ -128,7 +141,11 @@ export async function buildLibraryReport(roots: RootSpec[]): Promise<LibraryRepo
 export function formatLibraryOptimizationPrompt(report: LibraryReport, snapshot: { id: string; path: string }, reportPath: string): string {
   const urgent = report.issues.filter((issue) => issue.severity === 'fail').slice(0, 24);
   const warning = report.issues.filter((issue) => issue.severity === 'warn').slice(0, 24);
-  const line = (issue: LibraryIssue) => `- [${issue.severity}] ${issue.skill} · ${issue.title} — ${issue.detail}${issue.evidence ? `（${issue.evidence}）` : ''}`;
+  const line = (issue: LibraryIssue) => {
+    const where = issue.lines?.length ? `（L${issue.lines.map((item) => (item.start === item.end ? item.start : `${item.start}–${item.end}`)).join('、L')}）` : '';
+    const fix = issue.check ? ` → 单项修复：\`annot repair ${issue.file} --check ${issue.check}\`` : '';
+    return `- [${issue.severity}] ${issue.skill} · ${issue.title} — ${issue.detail}${issue.evidence ? `（${issue.evidence}）` : ''}${where}${fix}`;
+  };
   return [
     '# annot 整库评估与优化任务', '',
     `生成时间：${report.generatedAt}`,
@@ -158,9 +175,10 @@ export function formatLibraryOptimizationPrompt(report: LibraryReport, snapshot:
     '## 执行顺序',
     '1. 阅读报告：`' + reportPath + '`。',
     '2. 按 Skill 分批修改；每批先解释问题、目标动作、门禁与预期产出。',
-    '3. 对每个被改 Skill 运行 `annot review <SKILL.md>`；涉及动作图时再运行 `annot annotate` 与 `annot verify`。',
-    '4. 对高风险 Skill 建立行为 eval：至少包含应触发、不应触发、边界和失败恢复案例。',
-    '5. 汇总“已修复 / 未修复 / 未测”三类结果，并给出下一轮报告所需命令。',
+    '3. 单项修复用 `annot repair <SKILL.md> --check <id>`：它会带出精确行号、当前原文和该项的验收条件；整库批量也先用它拿到逐项任务，再逐项执行。',
+    '4. 对每个被改 Skill 运行 `annot review <SKILL.md>`，确认目标项变成 pass 且没有新增 fail/warn；涉及动作图时再运行 `annot annotate` 与 `annot verify`。',
+    '5. 对高风险 Skill 建立行为 eval：至少包含应触发、不应触发、边界和失败恢复案例。',
+    '6. 汇总“已修复 / 未修复 / 未测”三类结果，并给出下一轮报告所需命令。',
     '',
     '## 完成标准',
     '- 所有改动有明确来源和验收证据。',

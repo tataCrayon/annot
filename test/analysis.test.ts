@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 
 import {
   AnalysisValidationError,
+  StaleAnalysisError,
   buildAnalysisPrompt,
   buildEvaluationPrompt,
   buildFlowFromAnalysis,
@@ -98,9 +99,17 @@ test('analysis rejects a proposal made against a different source revision', () 
   const invalid = proposal();
   invalid.source_sha = '0'.repeat(64);
 
+  // A stale proposal is not a typo the reader can fix: it is the normal result
+  // of editing the Skill. It gets its own type so callers answer with "analyse
+  // it again" and name the file to replace, not with a validation message.
   assert.throws(
-    () => buildFlowFromAnalysis(SOURCE, invalid),
-    (error: unknown) => error instanceof AnalysisValidationError && /source hash mismatch/.test(error.message),
+    () => buildFlowFromAnalysis(SOURCE, invalid, { analysisPath: '.annot/analyses/x.analysis.json' }),
+    (error: unknown) => {
+      if (!(error instanceof StaleAnalysisError) || !/source hash mismatch/.test(error.message)) return false;
+      return error.detail.analysisPath === '.annot/analyses/x.analysis.json'
+        && error.detail.currentSha === parseSkill(SOURCE).sha
+        && error.detail.proposalSha === '0'.repeat(64);
+    },
   );
 });
 

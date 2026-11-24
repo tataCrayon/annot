@@ -38,7 +38,9 @@ SKILL.md
 Run:
 
 ```bash
-annot ai-prompt path/to/my-skill --out .annot/analyses/my-skill.analysis-task.md
+annot analyze path/to/my-skill
+#    task: .annot/my-skill/analysis-task.md
+#    proposal: .annot/analyses/my-skill.analysis.json
 
 # The host AI writes .annot/analyses/my-skill.analysis.json
 annot annotate path/to/my-skill \

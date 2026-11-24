@@ -17,6 +17,32 @@ afterEach(async () => {
   await Promise.all(workspaces.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
+/** A minimal but valid analysis for the branch-table fixture.
+ *
+ * The workbench only draws a graph that came from an AI analysis, so every test
+ * that wants a canvas has to supply one. Kept in one place so the quotes cannot
+ * drift from the fixture. */
+async function writeAnalysis(analysisDir: string) {
+  const source = await readFile(join(analysisDir, '..', 'skills', 'branch-table', 'SKILL.md'), 'utf8');
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const at = (needle: string) => {
+    const index = lines.findIndex((line) => line.includes(needle));
+    if (index < 0) throw new Error(`analysis helper: ${needle} is not in the fixture`);
+    return { start: index + 1, end: index + 1, quote: lines[index] };
+  };
+  const proposal = {
+    schema_version: 1,
+    skill: 'branch-table',
+    source_sha: parseSkill(source).sha,
+    nodes: [
+      { id: 'n-review', type: 'stage', label: 'Review the proposed method', ...at('Review the proposed method') },
+      { id: 'n-keep', type: 'stage', label: 'Continue with the current method', ...at('Continue with the current method.') },
+    ],
+    edges: [{ from: 'n-review', to: 'n-keep', kind: 'sequence' }],
+  };
+  await writeFile(join(analysisDir, 'branch-table.analysis.json'), JSON.stringify(proposal), 'utf8');
+}
+
 async function app() {
   const workspace = await mkdtemp(join(tmpdir(), 'annot-web-'));
   workspaces.push(workspace);
@@ -27,9 +53,11 @@ async function app() {
   await mkdir(join(root, 'branch-table'), { recursive: true });
   await mkdir(analysisDir, { recursive: true });
   await cp(fixture, join(root, 'branch-table', 'SKILL.md'));
-  const server = await startWebServer({ roots: [{ path: root, rank: 1, label: 'fixture skills' }], port: 0, analysisDir, snapshotDir, reportDir });
+  await writeAnalysis(analysisDir);
+  const taskDir = join(workspace, 'tasks');
+  const server = await startWebServer({ roots: [{ path: root, rank: 1, label: 'fixture skills' }], port: 0, analysisDir, snapshotDir, reportDir, taskDir });
   servers.push(server);
-  return { base: server.url, root, analysisDir, snapshotDir, reportDir };
+  return { base: server.url, root, analysisDir, snapshotDir, reportDir, taskDir };
 }
 
 async function json(base: string, path: string) {
@@ -183,7 +211,10 @@ test('web UI serves local assets and reports its configured roots', async () => 
   assert.match(html, /Skill description/);
   assert.match(html, /AI 重建动作图/);
   assert.match(html, /自然语言修改/);
-  assert.match(html, /评估与优化/);
+  // Evaluation is a whole-Skill action, so its entry sits with the graph tabs
+  // rather than inside the per-card drawer.
+  assert.match(html, /id="evaluate-skill"[^>]*>设计 Skill 评估</);
+  assert.doesNotMatch(html, /评估与优化/);
   assert.match(html, /网页只读 · 宿主执行/);
   assert.match(html, /data-app-view="library"/);
   assert.match(html, /id="system-skill-list"/);
@@ -209,6 +240,11 @@ test('web UI serves local assets and reports its configured roots', async () => 
   assert.match(script, /api\/roots/);
   assert.match(script, /submitRoots/);
   assert.match(script, /data-toggle-all-metrics/);
+  // The picker is in two places and one of them is a dialog created per open,
+  // so 全选/清空 must be delegated from document. Scoping it to `#node-detail`
+  // is exactly the bug where the button did nothing in the evaluation dialog.
+  assert.match(script, /document\.addEventListener\('click', \(event\) => \{\s*const selectAllMetrics = event\.target\.closest\?\.\('\[data-toggle-all-metrics\]'\)/);
+  assert.match(script, /document\.addEventListener\('change', \(event\) => \{\s*if \(!\(event\.target instanceof HTMLInputElement\) \|\| event\.target\.name !== 'metric'\) return;/);
   assert.match(script, /dialog\.showModal\(\)/);
   assert.match(css, /\.brief-dialog \{[\s\S]*width: min\(1080px, calc\(100vw - 48px\)\)/);
   assert.match(script, /class="brief-output" data-brief-output hidden/);
@@ -225,7 +261,43 @@ test('web UI serves local assets and reports its configured roots', async () => 
   assert.match(html, /<main id="main-content"[\s\S]*<\/main>\s*<aside id="node-drawer"/);
   assert.doesNotMatch(html, /drawer-backdrop/);
   assert.match(script, /body\.classList\.add\('panel-open'\)/);
+  // The drawer is a read-out of the card the reader clicked in the graph, not a
+  // second searchable index of the document: the list and its filter are gone,
+  // and the detail still carries both host-task forms.
+  assert.doesNotMatch(html, /id="node-search"/);
+  assert.doesNotMatch(html, /id="node-list"/);
+  assert.match(html, /<aside id="node-drawer"[\s\S]*id="node-detail"[\s\S]*<\/aside>/);
+  assert.match(script, /event\.data\?\.type !== 'annot-node-selected'/);
+  assert.match(script, /state\.selectedNodeId/);
+  assert.match(script, /taskPanelMarkup\('rewrite', node\.id\)/);
+  // The evaluation form is no longer injected into the drawer: it belongs to the
+  // whole Skill and gets its own dialog from the entry beside the graph tabs.
+  assert.doesNotMatch(script, /taskPanelMarkup\('evaluate'\)/);
+  assert.match(script, /function showEvaluationTask/);
+  assert.match(script, /type: 'annot-select-node'/);
   assert.doesNotMatch(html, /https?:\/\//);
+  // A diagnosis without a repair path is what the user reported: "存在阻断项"
+  // on screen and no button that produces the fix. Two entry points, because
+  // the reader arrives from two places: the Skill-wide bar under the sheet, or
+  // one failed check. A third copy in the header and the aside made the same
+  // task look like three different ones, and is explicitly not coming back.
+  assert.match(html, /id="standards-repair"/);
+  assert.match(html, /id="standards-repair-note"/);
+  assert.doesNotMatch(html, /id="standards-summary-repair"/);
+  assert.doesNotMatch(html, /id="standards-repair-aside"/);
+  assert.doesNotMatch(script, /standards-summary-repair|standards-repair-aside/);
+  assert.match(script, /data-repair-check/);
+  assert.match(script, /mode: 'repair'/);
+  assert.match(script, /function generateRepairTask/);
+  // A repair usually starts from something already on the clipboard — an issue,
+  // a review note — so the form offers a paste button into the intent field.
+  assert.match(script, /function showRepairTask/);
+  assert.match(script, /data-paste-intent/);
+  assert.match(script, /navigator\.clipboard\.readText/);
+  assert.match(css, /\.intent-field \{ display: grid; gap: 8px; \}/);
+  assert.match(script, /issue\.check \? `生成「\$\{issue\.title\}」修复任务`/);
+  assert.match(css, /\.standards-repair-bar \{/);
+  assert.doesNotMatch(css, /readiness-stack|\.repair-cta/);
   assert.deepEqual(status.body.roots.map((item: { path: string }) => item.path), [root]);
   assert.deepEqual(status.body.defaultRoots.map((item: { path: string }) => item.path), [root]);
   assert.equal(status.body.evaluationMetrics.length, 8);
@@ -247,7 +319,10 @@ test('skills, search, flow, graph, audit and context all use the discovered fixt
   assert.equal(skills.body.skills[0].name, 'branch-table');
   assert.equal(search.body.matches[0].name, 'branch-table');
   assert.equal(flow.body.doc.description, 'A table whose first column names mutually exclusive outcomes.');
-  assert.equal(flow.body.doc.edges.filter((edge: { kind: string }) => edge.kind === 'branch').length, 3);
+  // A branch edge is a claim about the source, so it comes from the analysis like
+  // every other edge; the fixture's analysis is two sequential steps.
+  assert.equal(flow.body.doc.source.method, 'ai');
+  assert.equal(flow.body.doc.edges.filter((edge: { kind: string }) => edge.kind === 'sequence').length, 1);
   assert.equal(flow.body.layout.nodes.length, flow.body.doc.nodes.length);
   assert.equal(audit.body.audits.length, 1);
   assert.equal(review.body.skill, 'branch-table');
@@ -268,18 +343,22 @@ test('annot system skills are exposed separately and remain inspectable without 
   assert.equal(system.body.skills.find((skill: { name: string }) => skill.name === 'annot')?.role, 'primary');
   assert.ok(system.body.skills.every((skill: { source: string }) => skill.source === 'system'));
   assert.ok(!user.body.skills.some((skill: { name: string }) => skill.name === 'annot'));
+  // The system skills ship with no analysis, and the workbench refuses to invent
+  // one: the answer is a 409 that names the missing file, plus the task route that
+  // produces it. Static review still works, because it does not claim a graph.
   const flow = await json(base, '/api/flow?name=annot&source=system');
   const review = await json(base, '/api/review?name=annot&source=system');
-  const graph = await fetch(new URL('/api/graph?name=annot&source=system', base));
+  const graph = await json(base, '/api/graph?name=annot&source=system');
   const brief = await fetch(new URL('/api/brief', base), {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'annot', source: 'system', mode: 'analyze', intent: '' }),
   });
-  assert.equal(flow.response.status, 200);
-  assert.equal(flow.body.doc.skill, 'annot');
+  assert.equal(flow.response.status, 409);
+  assert.equal(flow.body.analyze, true);
+  assert.match(flow.body.analysisPath, /annot\.analysis\.json$/);
+  assert.equal(review.response.status, 200);
   assert.equal(review.body.skill, 'annot');
-  assert.equal(graph.status, 200);
-  assert.match(await graph.text(), /这个 Skill 按什么顺序执行/);
+  assert.equal(graph.response.status, 409);
   assert.equal(brief.status, 200);
   assert.equal((await brief.json() as Record<string, any>).writesSource, false);
 });
@@ -347,8 +426,115 @@ test('web flow prefers a valid cached AI analysis over the rules draft', async (
   assert.equal(flow.body.doc.nodes[0].label, 'Review the proposed method');
 });
 
+test('a Skill without an analysis gets no graph, only the task that produces one', async () => {
+  const { base, analysisDir } = await app();
+  // Removing the cache is the state of every Skill before its first analysis.
+  await rm(join(analysisDir, 'branch-table.analysis.json'));
+  const flow = await json(base, '/api/flow?name=branch-table');
+  assert.equal(flow.response.status, 409);
+  assert.equal(flow.body.reason, 'no-analysis');
+  assert.equal(flow.body.analyze, true);
+  assert.match(flow.body.analysisPath, /branch-table\.analysis\.json$/);
+
+  // The graph document is refused too: an iframe that rendered a draft would be
+  // indistinguishable from one that rendered an analysis.
+  const graph = await json(base, '/api/graph?name=branch-table');
+  assert.equal(graph.response.status, 409);
+
+  // Rewrite needs a card, and a card only exists after an analysis.
+  const rewrite = await fetch(new URL('/api/brief', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'rewrite', node: 'n-review', intent: 'x' }),
+  });
+  assert.equal(rewrite.status, 409);
+  // The analysis task itself is still produced: that is the way out of the state.
+  const analyze = await fetch(new URL('/api/brief', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'analyze' }),
+  });
+  assert.equal(analyze.status, 200);
+  assert.match((await analyze.json() as Record<string, any>).brief, /annot annotate/);
+
+  // Static standards review never claimed a graph, so it keeps working.
+  const review = await json(base, '/api/review?name=branch-table');
+  assert.equal(review.response.status, 200);
+});
+
+test('an analysis written for an older revision is reported as stale, not as bad input', async () => {
+  const { base, root, analysisDir } = await app();
+  // Editing the Skill after analysing it is the ordinary case, not a malformed
+  // request. Before this, the hash mismatch fell through the generic handler and
+  // the page said "invalid request", which points at the client for no reason.
+  const source = await readFile(join(root, 'branch-table', 'SKILL.md'), 'utf8');
+  const currentSha = parseSkill(source).sha;
+  const staleSha = currentSha === 'f'.repeat(64) ? 'e'.repeat(64) : 'f'.repeat(64);
+  // The proposal itself is well-formed — only the body it described has changed.
+  const analysisPath = join(analysisDir, 'branch-table.analysis.json');
+  const proposal = JSON.parse(await readFile(analysisPath, 'utf8'));
+  await writeFile(analysisPath, JSON.stringify({ ...proposal, source_sha: staleSha }), 'utf8');
+
+  const flow = await json(base, '/api/flow?name=branch-table');
+  assert.equal(flow.response.status, 409);
+  assert.equal(flow.body.reason, 'stale-analysis');
+  assert.equal(flow.body.proposalSha, staleSha);
+  assert.equal(flow.body.currentSha, currentSha);
+  assert.equal(flow.body.analyze, true);
+  assert.match(flow.body.analysisPath, /branch-table\.analysis\.json$/);
+
+  const graph = await json(base, '/api/graph?name=branch-table');
+  assert.equal(graph.response.status, 409);
+  assert.equal(graph.body.reason, 'stale-analysis');
+  assert.equal(graph.body.currentSha, currentSha);
+
+  // The exit is still offered: an analysis task regenerates the same file.
+  const analyze = await fetch(new URL('/api/brief', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'analyze' }),
+  });
+  assert.equal(analyze.status, 200);
+
+  // And a rewrite card cannot be built from anchors that may no longer exist.
+  // The brief routes answer with their own sentence shape, but they must name
+  // the same file to replace rather than reporting a malformed request.
+  const rewrite = await fetch(new URL('/api/brief', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'rewrite', node: 'n-review', intent: 'x' }),
+  });
+  assert.equal(rewrite.status, 409);
+  const staleBrief = await rewrite.json() as Record<string, any>;
+  assert.match(staleBrief.error, /older version of this Skill/);
+  assert.match(staleBrief.error, /branch-table\.analysis\.json$/);
+});
+
+test('a task can be written to disk and comes back with the command that runs it', async () => {
+  const { base, root, taskDir } = await app();
+  const response = await fetch(new URL('/api/tasks', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'evaluate', intent: '评估成本', metrics: ['efficiency'] }),
+  });
+  const body = await response.json() as Record<string, any>;
+  assert.equal(response.status, 201);
+  assert.equal(body.writesSource, false);
+  assert.match(body.file, /branch-table\.evaluate\.md$/);
+  assert.match(body.command, /claude -p/);
+  assert.equal(typeof body.claudeFound, 'boolean');
+  const written = await readFile(body.file, 'utf8');
+  assert.match(written, /评估成本/);
+  assert.match(written, /源哈希/);
+
+  // The source Skill is untouched by the handoff, which is the entire boundary.
+  const source = await readFile(join(root, 'branch-table', 'SKILL.md'), 'utf8');
+  assert.match(source, /A table whose first column names mutually exclusive outcomes/);
+
+  const bad = await fetch(new URL('/api/tasks', base), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'branch-table', mode: 'rewrite', node: 'n-missing', intent: '' }),
+  });
+  assert.equal(bad.status, 409);
+});
+
 test('brief routes generate AI analysis, evaluation, and bounded rewrite tasks without writing source', async () => {
-  const { base, root } = await app();
+  const { base, root, analysisDir } = await app();
   const sourcePath = join(root, 'branch-table', 'SKILL.md');
   const before = await readFile(sourcePath, 'utf8');
   const flow = await json(base, '/api/flow?name=branch-table');
@@ -397,12 +583,71 @@ test('brief routes generate AI analysis, evaluation, and bounded rewrite tasks w
   assert.equal(analyzeBody.method, 'ai');
   assert.match(analyzeBody.brief, /不要用关键词表、动词表或正则规则/);
   assert.match(analyzeBody.brief, /quote.*逐字一致/);
+  // The task must name the file this server actually reads. A brief that points
+  // at `.annot/<skill>/analyses/...` produces a real analysis the page never
+  // loads, which looks exactly like a broken graph.
+  const proposalPath = join(analysisDir, 'branch-table.analysis.json').replace(/\\/g, '\\\\');
+  assert.match(analyzeBody.brief, new RegExp(proposalPath));
+  // A second, nested `analyses` directory is the failure this pins: it reads as
+  // "the graph is broken" when in fact the host wrote a correct analysis to a
+  // path nobody loads.
+  assert.doesNotMatch(analyzeBody.brief, /skills\\branch-table\\analyses/);
   assert.equal(openEvaluation.status, 200);
   assert.match(openEvaluationBody.brief, /用户目标：未指定/);
   assert.match(evaluateBody.brief, /没有运行就明确写“未测”/);
   assert.match(evaluateBody.brief, /应触发.*隐式.*带噪上下文/s);
   assert.match(evaluateBody.brief, /不应触发或相邻 Skill 冲突的负例/);
   assert.equal(after, before);
+});
+
+test('repair brief turns failing checks into a bounded task without writing source', async () => {
+  const { base, root } = await app();
+  const sourcePath = join(root, 'branch-table', 'SKILL.md');
+  const before = await readFile(sourcePath, 'utf8');
+  const review = await json(base, '/api/review?name=branch-table');
+  const failing = review.body.checks.filter((check: { status: string }) => check.status !== 'pass');
+  assert.ok(failing.length > 0, 'the fixture must have something to repair');
+
+  const post = async (body: Record<string, unknown>) => {
+    const response = await fetch(new URL('/api/brief', base), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'branch-table', mode: 'repair', ...body }),
+    });
+    return { response, body: await response.json() as Record<string, any> };
+  };
+
+  const all = await post({});
+  assert.equal(all.response.status, 200);
+  assert.equal(all.body.mode, 'repair');
+  assert.equal(all.body.writesSource, false);
+  assert.equal(all.body.source_sha, review.body.source_sha);
+  assert.deepEqual(all.body.targets.map((item: { id: string }) => item.id), failing.map((check: { id: string }) => check.id));
+  assert.match(all.body.brief, /没有修改任何 Skill 文件/);
+  assert.match(all.body.brief, /不能为了过检而删除内容/);
+
+  const single = await post({ checks: ['description-trigger'] });
+  assert.equal(single.response.status, 200);
+  assert.deepEqual(single.body.targets.map((item: { id: string }) => item.id), ['description-trigger']);
+  assert.match(single.body.brief, /description-trigger/);
+  assert.match(single.body.brief, /L4/);
+  assert.match(single.body.brief, /Use when the user asks/);
+
+  const unknown = await post({ checks: ['not-a-check'] });
+  const passing = await post({ checks: ['name'] });
+  const badShape = await post({ checks: 'description-trigger' });
+  assert.equal(unknown.response.status, 400);
+  assert.equal(passing.response.status, 409);
+  assert.equal(badShape.response.status, 400);
+  assert.equal(await readFile(sourcePath, 'utf8'), before);
+
+  // The reader's pasted instructions travel with the request and are quoted
+  // into the task, not dropped on the floor.
+  const noted = await post({ checks: ['description-trigger'], intent: '先只修触发词' });
+  assert.equal(noted.response.status, 200);
+  assert.equal(noted.body.note, '先只修触发词');
+  assert.match(noted.body.brief, /读者补充说明（原样引用）/);
+  assert.match(noted.body.brief, /先只修触发词/);
 });
 
 test('brief routes reject malformed, oversized, cross-site and unknown requests', async () => {

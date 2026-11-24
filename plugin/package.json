@@ -1,6 +1,6 @@
 {
   "name": "annot-dsh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Annotate any skill: flow graph with source anchors, drift checks, and a library audit, inside DeepSeek Harness.",

@@ -6,6 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -86,6 +87,11 @@ async function runClient(source?: string): Promise<{ svg: StubElement; panel: St
   const nodes = new Map<string, StubElement>();
   const svg = makeElement('svg');
   const canvas = makeElement('div');
+  // `event.target.closest('.node')` decides whether a canvas click cleared the
+  // selection; the stub needs the method even when nothing is closest.
+  canvas.addEventListener = function (this: StubElement, type: string, listener: (event: { target: unknown }) => void) {
+    if (type === 'click') (this as unknown as { onClick?: unknown }).onClick = listener;
+  } as StubElement['addEventListener'];
   const panel = makeElement('div');
   const todos = makeElement('div');
 
@@ -105,9 +111,15 @@ async function runClient(source?: string): Promise<{ svg: StubElement; panel: St
   }
 
   const document = {
+    // The client decides whether to pre-select the first card by looking at the
+    // body class (`is-embedded`), which the real page always has.
+    body: { classList: { contains: () => false } },
     getElementById: (id: string) => nodes.get(id) ?? null,
     createElementNS: (_ns: string, tag: string) => (tag === 'svg' ? svg : makeElement(tag)),
     createElement: (tag: string) => makeElement(tag),
+    // The chip snake measures `.action-chain`; the page always has one, so the
+    // stub must too or "no script threw" would be untested on that path.
+    querySelector: (selector: string) => (selector === '.action-chain' ? makeElement('ol') : null),
     querySelectorAll: () => [],
     // The client binds keyboard shortcuts on the document; a stub without this
     // throws before the first card is drawn, and the failure reads as "the
@@ -152,7 +164,8 @@ test('a node group is emitted for every graph node', async () => {
     // painter: a hard-coded width here is how a card and its label drift apart.
     const placed = sized.get(group.attrs['data-id']);
     assert.ok(placed, `${group.attrs['data-id']} is not in the layout`);
-    assert.equal(card.attrs.width, String(placed.w));
+    // A note's plate steps in from its box; every other card fills it.
+    assert.equal(card.attrs.width, String(placed.w - (placed.inset ?? 0)));
     // `h` reserves the fork row as well, so the plate is `cardH` and the group
     // is taller only when an open arm hangs under it.
     assert.equal(card.attrs.height, String(placed.cardH));
@@ -184,12 +197,27 @@ test('the page exposes every key action before the graph scrolls', async () => {
   assert.match(html, /class="action-overview-count">\d+ 个关键动作</);
   assert.match(html, /\.action-overview-head \{\s+display: grid; grid-template-columns: minmax\(0, 1fr\) auto;/);
   assert.match(html, /\.action-chain::before \{/);
-  assert.match(html, /pane\.scrollIntoView\(\{ block: 'start'/);
+  // An embedded graph must scroll only its own canvas: scrollIntoView walks up to
+  // the parent document and moves the workbench pane instead of the diagram.
+  assert.doesNotMatch(html, /scrollIntoView/);
+  assert.match(html, /pane\.scrollTop = Math\.max\(0, target\);/);
   assert.match(html, /--overview-inset: 48px/);
   assert.match(html, /\.action-overview-inner \{ margin: 0 var\(--overview-inset\); padding-bottom: var\(--space-6\); \}/);
   assert.match(html, /@media \(max-width: 1080px\) \{\s+:root \{ --overview-inset: 40px; \}/);
   assert.equal(buttons.length, doc.stats.byType.stage);
   assert.ok(buttons.length > 0, 'the action overview is empty on an actionable skill');
+});
+
+test('the graph opens at the reading scale and can zoom out to 20%', () => {
+  const text = readFileSync(join(here, 'fixtures', 'grill-method.md'), 'utf8');
+  const html = renderHtml(buildFlow(parseSkill(text), text, { sourceFile: 'SKILL.md' }));
+  // The workbench pane is ~1500px wide; a 900px graph at 100% leaves two thirds
+  // of it as paper. 60% is the default, 20% is the floor, and "reset" means the
+  // default rather than a magnification step the reader never asked for.
+  assert.match(html, /const ZOOMS = \[0\.2, [^\]]*2\];/);
+  assert.match(html, /const DEFAULT_ZOOM = 4; \/\/ 0\.6/);
+  assert.match(html, /applyZoom\(DEFAULT_ZOOM\);\n  pane\.scrollTop = 0;/);
+  assert.doesNotMatch(html, /let zoom = 3;/);
 });
 
 test('the detail panel numbers a sourced action as a key action', async () => {

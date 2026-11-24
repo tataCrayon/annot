@@ -9,7 +9,7 @@
  */
 
 import { computeFlowPhases, computeFlowStats } from './flow.ts';
-import { linesSha, parseSkill, readable, sha256, type ParsedSkill, type RawLine } from './parse.ts';
+import { linesSha, parseSkill, readable, sha256, slugify, type ParsedSkill, type RawLine } from './parse.ts';
 import type {
   AssociationRelation,
   AssociationScope,
@@ -69,6 +69,8 @@ export interface AnalysisProposal {
 export interface BuildAnalysisOptions {
   sourceFile?: string;
   now?: () => string;
+  /** Where the proposal came from, so a stale one can name the file to replace. */
+  analysisPath?: string;
 }
 
 export class AnalysisValidationError extends Error {
@@ -78,9 +80,59 @@ export class AnalysisValidationError extends Error {
   }
 }
 
+/**
+ * The analysis on disk describes a different file than the one being read.
+ *
+ * This is the ordinary consequence of editing a Skill, not a corrupt input: the
+ * hash in the analysis is the whole point of the anchor contract, so the fix is
+ * always "read the new file and analyse it again", never "trust the old one".
+ * It gets its own class because every caller has to answer with that instruction
+ * instead of a validation message a reader can only interpret as "I typed
+ * something wrong".
+ */
+export class StaleAnalysisError extends Error {
+  detail: { analysisPath: string; proposalSha: string; currentSha: string; skill: string };
+
+  constructor(message: string, detail: { analysisPath: string; proposalSha: string; currentSha: string; skill: string }) {
+    super(message);
+    this.name = 'StaleAnalysisError';
+    this.detail = detail;
+  }
+}
+
+/**
+ * Quote a path only when it needs it, so the copyable command stays readable.
+ * Backslashes are left alone: a double-quoted Windows path is a valid literal
+ * on every shell the host might use, and escaping them would corrupt it.
+ */
+function shellQuote(path: string): string {
+  return /[\s"']/.test(path) ? `"${path}"` : path;
+}
+
+export interface BuildAnalysisPromptOptions {
+  /**
+   * Absolute path the proposal must be saved to. The workbench serves proposals
+   * from its own `--analysis-dir`, so a task that only names the conventional
+   * relative path sends the host to a file the page never looks at — the graph
+   * then stays empty even though the analysis was written.
+   */
+  analysisPath?: string;
+}
+
+/**
+ * Where a Skill's proposal lives, relative to whatever `.annot` root the caller
+ * uses. One function so the CLI, the workbench and the prompt text cannot drift
+ * into three different filenames for the same document.
+ */
+export function proposalFileName(skill: string): string {
+  return `${slugify(skill)}.analysis.json`;
+}
+
 /** Ask a host model to perform semantic analysis and return only validated JSON. */
-export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md'): string {
+export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', options: BuildAnalysisPromptOptions = {}): string {
   const skill = parseSkill(source);
+  const analysisPath = options.analysisPath ?? `.annot/analyses/${slugify(skill.name)}.analysis.json`;
+  const graphDir = `.annot/${slugify(skill.name)}-graph`;
   return [
     '# Agent Skill 语义分析任务',
     '',
@@ -126,8 +178,22 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md'): st
     '- `start`、`end` 是 1-based 闭区间。`quote` 必须与这些行逐字一致，否则提案无效。',
     '- `id` 使用小写字母、数字、连字符或下划线，且在本文档内唯一。',
     '- `label` 写关键 Action，不要原样复制长段落。不能证明是动作的内容标为 `note`。',
-    '- `lane` 只能是 `reader | tool | model | output`。',
+    '- `lane` 只能是 `reader | tool | model | output`，它决定卡片画在哪个泳道。',
     '- `confidence` 表示你对语义判断的把握，不是关键词命中率。',
+    '',
+    '## 主干契约（图的骨架由你决定）',
+    '- **每一个可执行步骤都必须有节点**：Skill 用 `Step 1…N`、`Phase 1…N` 或编号小节组织流程时，这些步骤就是主干，不能用一段概览文字代替它们。',
+    '- 章节标题本身不是节点；只有当标题后的正文确实描述一个动作时，才为「标题 + 正文」建一个 `stage`，`start` 指向正文行。',
+    '- `edges` 是主干：默认按阅读顺序连 `sequence`。缺少边，布局就只能猜顺序。',
+    '- 规则密集的段落（铁律、红线、禁止项）多数是 `gate`，它们挂在所属动作旁边，**不**构成动作编号；不要因为一段话里禁止词多就把它升级成步骤。',
+    '- 同一件事的多个约束合并成一个 `gate` 节点（`start`/`end` 覆盖该段），不要逐句拆成十几张卡。',
+    '',
+    '## 泳道契约',
+    '- `reader`：读者自己要做的判断、检查、编辑、决策。',
+    '- `tool`：读者要执行的命令、脚本、API、MCP 调用；代码块里的可执行命令属于这里。',
+    '- `model`：Skill 明确交给模型/AI 自行完成的推理或生成。',
+    '- `output`：产出的文件、报告、表格；这类通常也是 `artifact`。',
+    '- 泳道要按真实执行者判断：命令就是命令，即使它写在 `stage` 段落里；判断就是判断，即使它写在 bash 块旁边。',
     '',
     '## 边与说明契约',
     '- `edges` 只放真实执行关系；`sequence` 表示先后，`branch` 表示有来源证据的条件分支，并必须写 `when`。',
@@ -138,9 +204,11 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md'): st
     '- 不要把说明当作执行步骤，也不要为了连图而伪造边。',
     '',
     '## 交付步骤',
-    `1. 把 JSON 写到源文件之外的 \`.annot/analyses/${skill.name}.analysis.json\`；网页默认从这个目录读取已验证提案。`,
-    `2. 运行 \`annot annotate "${sourceFile}" --analysis .annot/analyses/${skill.name}.analysis.json --out .annot/${skill.name}-graph\`。`,
-    '3. 汇报 flow/HTML 路径、验证失败项和仍不确定的语义。不要修改原 Skill。',
+    `1. 把 JSON 写到 ${analysisPath}；工作台在这个路径读取已验证提案，目录不存在时先建。`,
+    `2. 运行 \`annot annotate ${shellQuote(sourceFile)} --analysis ${shellQuote(analysisPath)} --out ${shellQuote(graphDir)}\`；它验证引文并生成 \`flow.json\` + \`html\`。`,
+    '3. 画图靠的就是这一个文件：网页不会用别的提案顶替它，写到别处等于没分析。',
+    '4. 汇报 flow/HTML 路径、验证失败项和仍不确定的语义。不要修改原 Skill。',
+    '5. 只输出 JSON；没有分析时 annot 不画图，所以这份 JSON 就是图的唯一来源。',
     '',
     '## 源文件（行号只用于定位证据）',
     '```text',
@@ -199,7 +267,10 @@ export function buildFlowFromAnalysis(
   const skill = parseSkill(source);
   if (proposal.schema_version !== 1) throw new AnalysisValidationError('analysis schema_version must be 1');
   if (proposal.source_sha !== skill.sha) {
-    throw new AnalysisValidationError(`source hash mismatch: proposal ${proposal.source_sha.slice(0, 12)}, current ${skill.sha.slice(0, 12)}`);
+    throw new StaleAnalysisError(
+      `source hash mismatch: proposal ${proposal.source_sha.slice(0, 12)}, current ${skill.sha.slice(0, 12)}`,
+      { analysisPath: options.analysisPath ?? '', proposalSha: proposal.source_sha, currentSha: skill.sha, skill: skill.name },
+    );
   }
   if (proposal.skill !== skill.name) {
     throw new AnalysisValidationError(`skill name mismatch: proposal ${proposal.skill}, current ${skill.name}`);
@@ -285,6 +356,14 @@ export function buildFlowFromAnalysis(
     rationale: item.rationale,
   }));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  // A proposal without edges is a bag of cards: the layout has no order to draw
+  // and falls back to source order, which is exactly the guessing this path
+  // exists to remove. The analysis owns the graph, so it must say what follows
+  // what.
+  const executable = nodes.filter((node) => node.type !== 'note');
+  if (proposal.edges.length === 0 && executable.length > 1) {
+    throw new AnalysisValidationError('edges is empty: an analysis with more than one executable node must state the sequence, not leave the order to the layout');
+  }
   for (const association of associations) {
     if (nodeById.get(association.from)?.type !== 'note') {
       throw new AnalysisValidationError(`${association.from}: associations must originate from a note`);

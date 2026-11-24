@@ -27,3 +27,6 @@ data/
 # ad-hoc probes: rendered pages and screenshots used while tuning the extractor
 .probe/
 shots/
+
+# IDE project files
+.idea/

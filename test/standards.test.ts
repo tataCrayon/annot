@@ -92,4 +92,75 @@ test('note coverage exposes source targets so a warning can be inspected', async
     assert.ok(target.start > 0);
     assert.ok(target.end >= target.start);
   }
+  assert.ok(check.remedy, 'a warning a reader can act on needs a remedy, not just a description');
+  assert.deepEqual(check.lines, check.nodeTargets?.map((target) => ({ start: target.start, end: target.end })));
+});
+
+test('angle brackets in description are a rendering warning, not a spec violation', async () => {
+  // The Agent Skills spec constrains description to non-empty and ≤1024 chars;
+  // it says nothing about `<`/`>`. Marking this a blocker blocked a real skill
+  // whose description legitimately writes `/hallmark redesign <path>`.
+  const root = await mkdtemp(join(tmpdir(), 'annot-standard-angle-'));
+  try {
+    const dir = join(root, 'angle-skill');
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, 'SKILL.md');
+    const source = [
+      '---',
+      'name: angle-skill',
+      'description: "Redesign a page. Use when the user asks, as in `/angle redesign <path>`."',
+      '---',
+      '',
+      '# Angle',
+      '',
+      'Read the page before writing anything.',
+    ].join('\n');
+
+    const report = await reviewSkill(source, file);
+    const check = report.checks.find((item) => item.id === 'description');
+
+    assert.equal(check?.status, 'warn');
+    assert.equal(report.readiness, 'review');
+    assert.equal(report.summary.fail, 0);
+    assert.match(check?.detail ?? '', /转义/);
+    assert.deepEqual(check?.lines, [{ start: 3, end: 3 }]);
+    assert.ok(check?.remedy);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('every failing check carries a remedy and the lines it would touch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'annot-standard-fix-'));
+  try {
+    const dir = join(root, 'wrong-folder');
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, 'SKILL.md');
+    const source = [
+      '---',
+      'name: Bad Name',
+      'description: Handle anything and everything. [TODO: say when]',
+      '---',
+      '',
+      '# Broken',
+      '',
+      'Load [the missing rubric](references/missing.md).',
+    ].join('\n');
+
+    const report = await reviewSkill(source, file);
+    const failing = report.checks.filter((item) => item.status !== 'pass');
+
+    assert.ok(failing.length >= 3);
+    for (const check of failing) {
+      assert.ok(check.remedy, `${check.id} fails without telling the reader how to fix it`);
+      assert.ok(check.lines?.length, `${check.id} fails without saying which lines it is about`);
+      for (const line of check.lines ?? []) {
+        assert.ok(line.start >= 1 && line.end >= line.start);
+        assert.ok(line.end <= source.split('\n').length);
+      }
+    }
+    assert.equal(report.source_sha.length, 64);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -55,18 +55,27 @@ const CARD_LABEL_TOP = 42;
 const PHASE_RADIUS = 12;
 /** The phase label gets its own strip above the cards, never their first line. */
 const PHASE_LABEL_GAP = 28;
-const PHASE_BOTTOM_PAD = 12;
+/**
+ * Paper below the last card of a phase run.
+ *
+ * The band has to stop before the next one starts: it is drawn from
+ * `top.y - PHASE_LABEL_GAP` to `bottom.y + bottom.h + PHASE_BOTTOM_PAD`, and
+ * consecutive bands are only `BAND_GAP` apart. At 12 the two rectangles
+ * overlapped by 6px (12 + 28 − 34), which showed as two tinted washes crossing
+ * at every chapter boundary. 4 leaves a 2px seam.
+ */
+const PHASE_BOTTOM_PAD = 4;
 /**
  * The strip above the first row that names the columns and says what they hold.
  *
- * Title, note and rule need three separate baselines. At 46px the rule cut
- * through the note; the extra space keeps labels legible and puts a readable
- * gap between the rule and the first step.
+ * Title, note and rule still need three separate baselines — but not 100px of
+ * paper. A two-line legend reads in one glance; the third line was only air,
+ * and in the workbench it pushed the first card below the fold.
  */
-const COLUMN_HEADER_H = 100;
-const COLUMN_HEADER_TITLE_Y = 28;
-const COLUMN_HEADER_NOTE_Y = 54;
-const COLUMN_HEADER_RULE_Y = 78;
+const COLUMN_HEADER_H = 74;
+const COLUMN_HEADER_TITLE_Y = 20;
+const COLUMN_HEADER_NOTE_Y = 40;
+const COLUMN_HEADER_RULE_Y = 56;
 /**
  * Left margin reserved for the step numbers.
  *
@@ -88,7 +97,25 @@ interface Placed extends FlowNode {
   /** Position inside the band, left to right. */
   slot: number;
   /** Which column the card is drawn in; the stack layout puts every card in `core`. */
-  col: 'core' | 'side' | 'artifact';
+  col: StructuralColumn;
+  /**
+   * `attached` for a note drawn against the card it explains, `global` for a
+   * Skill-wide note, `loose` for an unbound one, `null` for executable cards.
+   */
+  home: NoteHome | null;
+  /** For an attached note: the id of the card it explains. */
+  explains?: string;
+  /** For an attached note: the relation, so the card can name it. */
+  relation?: string;
+  /**
+   * How far the painted plate is pushed in from the left edge of this box.
+   *
+   * A note's box is as wide as the card it hangs under, because that is the
+   * column; only its plate steps in, which is what makes it read as a remark
+   * rather than a peer. Keeping `x`/`w` on the column means every card in a
+   * column still starts at one x, and overlap checks stay simple.
+   */
+  inset?: number;
   /** The label already broken into lines, so layout and paint cannot disagree. */
   lines: string[];
   /** The subtitle, wrapped to one line or elided. */
@@ -130,16 +157,29 @@ export interface Layout {
   /** One entry per depth band, for the numbered rules the page draws. */
   bands: Array<{ index: number; y: number; count: number }>;
   /** The columns that actually carry a card, in compressed drawing order. */
-  columns: Array<{ key: 'core' | 'side' | 'artifact'; label: string; x: number; w: number }>;
+  columns: Array<{ key: StructuralColumn; label: string; x: number; w: number }>;
   /** Headers for the columns that actually carry a card. */
   columnHeaders: Array<{
-    key: 'core' | 'side' | 'artifact';
+    key: StructuralColumn;
     label: string;
     /** One line saying what belongs in this column, so the lanes need no legend. */
     note: string;
     x: number;
     w: number;
     used: boolean;
+    count: number;
+  }>;
+  /**
+   * Horizontal bands inside the action column, one per `lane`. Empty unless at
+   * least two lanes carry a card, so a one-lane document keeps its old canvas.
+   */
+  laneRuns: Array<{
+    lane: Lane;
+    label: string;
+    x: number;
+    w: number;
+    y: number;
+    h: number;
     count: number;
   }>;
   /**
@@ -292,26 +332,79 @@ function depthOfDoc(doc: FlowDoc): Map<string, number> {
  * it, and what comes out". Only action-backed stages enter the main chain; a
  * gate, decision, external call or note is context beside that action.
  */
-function columnOf(type: NodeType): 'core' | 'side' | 'artifact' {
-  if (type === 'artifact') return 'artifact';
-  if (type === 'stage') return 'core';
+/**
+ * Every type has exactly one column, and the mapping never degrades.
+ *
+ * There used to be a fallback: a gate or decision that shared a row with no
+ * step was drawn in the action column "because there is nothing to sit beside".
+ * On a Skill that opens with rules (account-research starts with 19 gates), that
+ * put 22 cards in a lane whose header said "关键动作 2" and pushed the 45 real
+ * context cards off to the right of an empty row. A lane that says what it holds
+ * has to hold exactly that; the only exception is a document with no actions at
+ * all, where the context lane *is* the reading surface (see `columnLayout`).
+ */
+function columnOf(node: FlowNode): StructuralColumn {
+  if (node.type === 'artifact') return 'artifact';
+  if (node.type === 'stage') return 'core';
+  // A command belongs to whoever runs it. An `external` or `gate` card whose
+  // lane is `tool` is a command, and drawing it in the context column hid the
+  // one thing the reader has to know about it. `output` stays with the results.
+  if (node.lane === 'tool' && node.type !== 'note') return 'core';
   return 'side';
 }
 
-/** One key action and everything the source attaches to it. */
-interface Row {
-  /** The action itself; absent only for context that precedes the first action. */
-  core?: FlowNode;
-  /** Decision / gate / external / note cards, in source order. */
-  side: FlowNode[];
-  /** Artifact cards, in source order. */
-  artifacts: FlowNode[];
-  /** Index of the phase run this row belongs to. */
-  band: number;
+/** Where a note card belongs, given what the association pass decided about it. */
+function noteHomeOf(node: FlowNode, targetId: string | undefined): NoteHome {
+  if (node.associationScope === 'skill') return 'global';
+  if (!targetId) return 'loose';
+  return 'attached';
 }
 
 /**
- * One row per core step, with its side cards attached.
+ * Which structural column a card is drawn in.
+ *
+ * `scope` is not part of the flow: it is the rail that holds notes applying to
+ * the whole Skill (or to nothing the extractor could verify), kept separate so
+ * they never stand where an executable step stands.
+ */
+type StructuralColumn = 'core' | 'side' | 'artifact' | 'scope';
+
+/**
+ * What a note card is — not where it is drawn.
+ *
+ * Notes used to be a third lane ("判断 · 门禁 · 调用 · 说明"), which made a
+ * 27-note skill look like 27 rules: every explanation got the same weight as a
+ * gate. A note explains exactly one thing, so it is drawn against the card it
+ * explains. The one exception is a note the reviewer marked as applying to the
+ * whole Skill; that has no single neighbour and gets its own rail.
+ */
+type NoteHome = 'attached' | 'global' | 'loose';
+
+interface StructuralRow {
+  core?: FlowNode;
+  /** Decision / gate / external cards, in source order. */
+  side: FlowNode[];
+  artifacts: FlowNode[];
+  band: number;
+}
+
+/** A note and the card it hangs under, if it has one. */
+interface RowNote {
+  node: FlowNode;
+  /** The card the note explains; absent for a global or unbound note. */
+  targetId?: string;
+  /** The owner's structural column, used when the owner is not in this row. */
+  col: StructuralColumn;
+}
+
+/** One key action and everything the source attaches to it. */
+interface Row extends StructuralRow {
+  /** Notes filed into this row; each carries the column of its owner. */
+  notes: RowNote[];
+}
+
+/**
+ * One row per core step, with its side cards and the notes that explain them.
  *
  * The row is found by walking source order and remembering the last core card,
  * NOT by picking the nearest core card by line number. Nearest-by-line was
@@ -319,27 +412,92 @@ interface Row {
  * 1. "The last core card above me in the document" produced zero backwards
  * edges on all four real skills, and every edge lands either on its own row
  * (core → its gate) or the next one (core → next core).
+ *
+ * A note is filed into the row of the card it explains, which is the whole
+ * point: the pair is drawn on one row, in one column, so "this gate comes with
+ * that rule" is visible instead of something the reader has to trace. Filing it
+ * into the owner's row — rather than opening a row that repeats the owner —
+ * also keeps every card drawn exactly once; a card painted twice fails
+ * `annot verify`, and rightly so: two positions for one anchor is a lie.
+ *
+ * A note with no owner (applies to the whole Skill, or nothing it could be
+ * verified against) goes to the `scope` rail instead of the context column: it
+ * is not a rule beside one step, and standing it next to a gate would claim an
+ * attachment the source never made.
  */
 function rowsOf(doc: FlowDoc): Row[] {
   const rows: Row[] = [];
   let current: Row | undefined;
+  const empty = (core?: FlowNode): Row => ({ core, side: [], artifacts: [], notes: [], band: 0 });
+
+  // A note is placed by what it explains, so the association pass has to run
+  // first — it is the only thing that knows a note's target.
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const targetOf = new Map<string, FlowNode>();
+  for (const association of doc.associations ?? []) {
+    const to = byId.get(association.to);
+    if (to) targetOf.set(association.from, to);
+  }
+
+  const rowOf = new Map<string, Row>();
+  // A note can name a card that appears later in the file (`explicit-reference`
+  // allows it). Those wait until the walk is over; skipping them would silently
+  // drop a card the page promises to draw.
+  const deferred: Array<{ node: FlowNode; target: FlowNode }> = [];
+
   for (const node of doc.nodes) {
-    const column = columnOf(node.type);
+    if (node.type === 'note') {
+      const target = targetOf.get(node.id);
+      if (target && node.associationScope === 'node') {
+        const owner = rowOf.get(target.id);
+        if (!owner) {
+          deferred.push({ node, target });
+          continue;
+        }
+        owner.notes.push({ node, targetId: target.id, col: columnOf(target) });
+        continue;
+      }
+      // Skill-wide and unbound notes have no owner. They go on the scope rail,
+      // in the row where the source puts them, so the rail still reads top-down.
+      if (!current) {
+        current = empty();
+        rows.push(current);
+      }
+      current.notes.push({ node, col: 'scope' });
+      continue;
+    }
+
+    const column = columnOf(node);
     if (column === 'core') {
       // Every core step opens a row, even when a side card has already opened
       // one: the core card is the row's spine and is never displaced.
-      current = { core: node, side: [], artifacts: [], band: 0 };
+      current = empty(node);
       rows.push(current);
+      rowOf.set(node.id, current);
       continue;
     }
     if (!current) {
       // Side cards before the first step still need a row of their own; dropping
       // them would silently lose a card the page promises to draw.
-      current = { core: undefined, side: [], artifacts: [], band: 0 };
+      current = empty();
       rows.push(current);
     }
     if (column === 'side') current.side.push(node);
     else current.artifacts.push(node);
+    rowOf.set(node.id, current);
+  }
+
+  for (const { node, target } of deferred) {
+    const owner = rowOf.get(target.id);
+    if (owner) {
+      owner.notes.push({ node, targetId: target.id, col: columnOf(target) });
+      continue;
+    }
+    if (!current) {
+      current = empty();
+      rows.push(current);
+    }
+    current.notes.push({ node, col: 'scope' });
   }
   return rows;
 }
@@ -366,12 +524,41 @@ function cardGeometry(node: FlowNode, width: number) {
  * artifacts but no core steps; reserving an empty core column pushed every real
  * card off the first screen. `columnLayout` assigns x from the columns the
  * document actually uses.
+ *
+ * `scope` is not a flow column. It is the rail for notes that apply to the whole
+ * Skill (or to nothing the extractor could verify): an explanation that belongs
+ * to no single step standing beside a gate would claim an attachment the source
+ * never made, so it gets its own track at the far right.
  */
 const COLUMN = {
   core: { w: 440, label: '关键动作', note: '按原文顺序执行、有动作证据的事' },
-  side: { w: 250, label: '判断 · 门禁 · 调用 · 说明', note: '约束、依据与上下文，不按动作编号' },
+  side: { w: 250, label: '判断 · 门禁 · 调用', note: '约束与依据，挂在所属动作的右边' },
   artifact: { w: 220, label: '产物', note: '动作产生的结果或交付物' },
+  scope: { w: 240, label: '全局 · 孤立说明', note: '不跟某一步走的说明，单独一条轨道' },
 } as const;
+
+/**
+ * An attached note steps in from its owner's left edge and keeps the owner's
+ * right edge, so the two plates form one block.
+ *
+ * A note is not a fourth kind of card. It is a comment on one card, and drawing
+ * it in the owner's column, directly below that card, is what makes "this gate
+ * comes with that rule" true at a glance instead of something to trace.
+ */
+/** How far a note's plate is pushed in from its column's left edge. */
+const NOTE_INSET = 56;
+/**
+ * Space between a card and the notes hanging under it.
+ *
+ * Tighter than SIBLING_GAP, but not by much: 12px was a hairline once the graph
+ * was fitted to a pane (roughly 7px on screen at 60%), and a step plus its note
+ * then read as one fused block — the note's inset alone was not enough to say
+ * "this is a remark on the card above". 22 keeps that step-in cue while leaving
+ * a visible strip of paper between the two plates.
+ */
+const NOTE_GAP = 22;
+/** Paper above and below the cards of one lane, so the two bands read apart. */
+const LANE_PAD = 14;
 
 type ColumnKey = keyof typeof COLUMN;
 
@@ -407,9 +594,33 @@ function columnLayout(used: Set<ColumnKey>, contextOnly: boolean): {
  * columns would leave two thirds of the canvas empty for nothing.
  */
 export function layoutNodes(doc: FlowDoc): Layout {
-  if (doc.edges.some((edge) => edge.kind === 'branch')) return layoutStack(doc);
-  const hasSide = doc.nodes.some((n) => columnOf(n.type) !== 'core');
+  // Branch edges used to force `layoutStack`, which lost the lanes on exactly
+  // the skills that have the most context to place. What a branch changes is
+  // depth, not the column map, so only a document with nothing to put beside a
+  // step falls back to the stack.
+  const hasSide = doc.nodes.some((n) => columnOf(n) !== 'core');
   return hasSide ? layoutColumns(doc) : layoutStack(doc);
+}
+
+interface Cell {
+  node: FlowNode;
+  column: ColumnKey;
+  note: boolean;
+  /** For an attached note: the card it hangs under. */
+  targetId?: string;
+}
+
+/**
+ * Where a context card is drawn when the document has no actions at all.
+ *
+ * A Skill that is only rules and outputs has no trunk to hang a sidebar on, so
+ * the context lane becomes the reading surface: it is drawn wide, first, and the
+ * note attached to it rides the same column. This is the one case where a
+ * non-stage card stands in the action column, and it is decided by the whole
+ * document rather than by one row, so the header and the cards cannot disagree.
+ */
+function fallbackContextColumn(doc: FlowDoc): 'core' | undefined {
+  return doc.nodes.some((node) => node.type === 'stage') ? undefined : 'core';
 }
 
 function layoutColumns(doc: FlowDoc): Layout {
@@ -420,12 +631,20 @@ function layoutColumns(doc: FlowDoc): Layout {
   if (rows.some((row) => row.core && row.side.length > 0)) used.add('side');
   if (!hasActions && rows.some((row) => row.side.length > 0)) used.add('core');
   if (doc.nodes.some((node) => node.type === 'artifact')) used.add('artifact');
+  if (rows.some((row) => row.notes.some((note) => note.col === 'scope'))) used.add('scope');
+  const contextColumn = fallbackContextColumn(doc) ?? 'side';
   const column = columnLayout(used, !hasActions);
   const incoming = new Map<string, string[]>();
   for (const edge of doc.edges) {
     const sources = incoming.get(edge.to) ?? [];
     sources.push(edge.from);
     incoming.set(edge.to, sources);
+  }
+  /** Why each note is here, so the card can name its relation to its owner. */
+  const relationOf = new Map<string, string>();
+  const nodeById = new Map(doc.nodes.map((node) => [node.id, node]));
+  for (const association of doc.associations ?? []) {
+    if (nodeById.has(association.to)) relationOf.set(association.from, association.relation);
   }
 
   const placed: Placed[] = [];
@@ -434,47 +653,122 @@ function layoutColumns(doc: FlowDoc): Layout {
   let cursorY = PAD + COLUMN_HEADER_H;
 
   rows.forEach((row, index) => {
-    const cells: Array<{ node: FlowNode; column: ColumnKey }> = [];
-    if (row.core) cells.push({ node: row.core, column: 'core' });
-    // Context before the first action is the document's opening, not a
-    // sidebar. Keep it full-width in the primary column so the eye starts at
-    // the left edge and reaches the first action without crossing empty paper.
-    for (const node of row.side) cells.push({ node, column: row.core ? 'side' : 'core' });
-    for (const node of row.artifacts) cells.push({ node, column: 'artifact' });
-    // Affix cards inherit the last action's band, but “same band” must not mean
-    // “same height”. Their sequence still follows the source, so schedule them
-    // in source order and after every dependency already placed.
+    const cells: Cell[] = [];
+    if (row.core) cells.push({ node: row.core, column: 'core', note: false });
+    // Context keeps its own column even before the first action. It used to be
+    // promoted into the action column "because there is nothing to sit beside",
+    // which on a Skill that opens with rules put 22 gate and note cards under a
+    // header reading 关键动作 2 and left the real context lane empty beside them.
+    for (const node of row.side) cells.push({ node, column: contextColumn, note: false });
+    for (const node of row.artifacts) cells.push({ node, column: 'artifact', note: false });
+    // Notes come after the cards they hang under. Their own source order still
+    // decides which note sits first, but a note is never painted above its owner:
+    // that would put the explanation before the thing it explains.
+    for (const note of row.notes) {
+      const column = contextColumn === 'core' && (note.col === 'side' || note.col === 'core') ? 'core' : note.col;
+      cells.push({ node: note.node, column, note: true, targetId: note.targetId });
+    }
+    // Source order, not column order. A row is one moment in the document, and a
+    // gate can depend on the artifact above it: sorting by column would put the
+    // artifact under the gate and draw that dependency backwards. Notes stay
+    // after their owner regardless, because placement clamps them below it.
     cells.sort((left, right) => left.node.anchor.start - right.node.anchor.start);
 
     const columnBottoms = new Map<string, number>();
-    const byId = new Map(placed.map((node) => [node.id, node]));
-    const geometries = new Map<string, ReturnType<typeof cardGeometry>>();
-    for (const cell of cells) {
-      const geo = cardGeometry(cell.node, column.byKey.get(cell.column)?.w ?? COLUMN[cell.column].w);
-      geometries.set(cell.node.id, geo);
-    }
-    for (const cell of cells) {
-      const geo = geometries.get(cell.node.id);
-      if (!geo) continue;
-      const priorInColumn = columnBottoms.get(cell.column);
-      let y = priorInColumn === undefined ? cursorY : priorInColumn + SIBLING_GAP;
+    /** Every card placed so far, so an edge never orders a card above its source. */
+    const bottoms = new Map<string, { y: number; h: number }>();
+    const geometries = new Map<string, { width: number; x: number; y: number; geo: ReturnType<typeof cardGeometry> }>();
+    const geometryOf = (cell: Cell, priorY: number) => {
+      const columnW = column.byKey.get(cell.column)?.w ?? COLUMN[cell.column].w;
+      const inset = cell.note && cell.column !== 'scope' ? NOTE_INSET : 0;
+      // A note occupies the card above it minus an inset on the left: the same
+      // footprint, one step in. That step is what says "this is a remark about
+      // the card above, not another step".
+      return {
+        width: columnW,
+        inset,
+        x: column.byKey.get(cell.column)?.x ?? PAD + GUTTER,
+        y: priorY,
+        geo: cardGeometry(cell.node, Math.max(160, columnW - inset)),
+      };
+    };
+    /** Place a card after everything already in its column and after its sources. */
+    const place = (cell: Cell) => {
+      const prior = columnBottoms.get(cell.column);
+      const layout = geometryOf(cell, prior === undefined ? cursorY : prior + SIBLING_GAP);
       for (const sourceId of incoming.get(cell.node.id) ?? []) {
-        const source = byId.get(sourceId);
-        if (source) y = Math.max(y, source.y + source.h + SIBLING_GAP);
+        const source = bottoms.get(sourceId);
+        if (source) layout.y = Math.max(layout.y, source.y + source.h + SIBLING_GAP);
       }
+      geometries.set(cell.node.id, layout);
+      bottoms.set(cell.node.id, { y: layout.y, h: layout.geo.h });
+      columnBottoms.set(cell.column, layout.y + layout.geo.h);
+    };
+    /**
+     * Place a note directly under the card it explains.
+     *
+     * NOTE_GAP, not SIBLING_GAP: the tighter gap is the only cue that the note
+     * belongs to one card rather than standing on its own. When the owner is not
+     * the bottom-most card of its column the note drops to the column bottom
+     * instead — it must not cover a card that comes after it in the source.
+     */
+    const hang = (cell: Cell) => {
+      const owner = cell.targetId ? bottoms.get(cell.targetId) : undefined;
+      const bottom = columnBottoms.get(cell.column);
+      const under = owner ? owner.y + owner.h + NOTE_GAP : cursorY;
+      const y = bottom === undefined ? under : Math.max(under, bottom + NOTE_GAP);
+      const layout = geometryOf(cell, y);
+      geometries.set(cell.node.id, layout);
+      bottoms.set(cell.node.id, { y: layout.y, h: layout.geo.h });
+      columnBottoms.set(cell.column, layout.y + layout.geo.h);
+    };
+
+    // Cards first, in source order; each note is placed the moment its owner is,
+    // so the pair is adjacent by construction. A note whose owner is not in this
+    // row (or has none) is placed after the cards, at the bottom of its column.
+    const cards = cells.filter((cell) => !cell.note);
+    const notesUnder = new Map<string, Cell[]>();
+    const orphanNotes: Cell[] = [];
+    for (const cell of cells) {
+      if (!cell.note) continue;
+      if (!cell.targetId) {
+        orphanNotes.push(cell);
+        continue;
+      }
+      const list = notesUnder.get(cell.targetId) ?? [];
+      list.push(cell);
+      notesUnder.set(cell.targetId, list);
+    }
+    for (const card of cards) {
+      place(card);
+      for (const note of notesUnder.get(card.node.id) ?? []) hang(note);
+    }
+    for (const note of orphanNotes) hang(note);
+    // A note that named a card in another row would otherwise be dropped; the
+    // page promises to draw every node, so it lands at the bottom of its column.
+    for (const [targetId, notes] of notesUnder) {
+      if (cards.some((card) => card.node.id === targetId)) continue;
+      for (const note of notes) hang(note);
+    }
+
+    for (const cell of cells) {
+      const layout = geometries.get(cell.node.id);
+      if (!layout) continue;
       const node: Placed = {
         ...cell.node,
-        ...geo,
+        ...layout.geo,
         band: index,
         slot: 0,
         col: cell.column,
-        x: column.byKey.get(cell.column)?.x ?? PAD + GUTTER,
-        y,
-        w: column.byKey.get(cell.column)?.w ?? COLUMN[cell.column].w,
+        home: cell.note ? (cell.targetId ? 'attached' : noteHomeOf(cell.node, undefined)) : null,
+        explains: cell.note ? cell.targetId : undefined,
+        relation: cell.note ? relationOf.get(cell.node.id) : undefined,
+        x: layout.x,
+        y: layout.y,
+        w: layout.width,
+        inset: layout.inset,
       };
       placed.push(node);
-      byId.set(node.id, node);
-      columnBottoms.set(cell.column, y + geo.h);
     }
     const rowH = Math.max(64, ...placed.filter((node) => node.band === index).map((node) => node.y + node.h - cursorY));
 
@@ -518,16 +812,71 @@ function layoutColumns(doc: FlowDoc): Layout {
     columnHeaders: (Object.keys(COLUMN) as ColumnKey[]).filter((key) => used.has(key)).map((key) => ({
       key,
       label: key === 'core' && !hasActions ? '主要上下文' : COLUMN[key].label,
-      note: key === 'core' && !hasActions ? '判断、门禁、调用与说明按原文顺序展开' : COLUMN[key].note,
+      note: key === 'core' && !hasActions ? '判断、门禁、调用按原文顺序展开' : COLUMN[key].note,
       x: column.byKey.get(key)?.x ?? PAD + GUTTER,
       w: column.byKey.get(key)?.w ?? COLUMN[key].w,
       used: true,
-      count: key === 'core'
-        ? placed.filter((p) => hasActions ? p.type === 'stage' : p.type !== 'artifact').length
-        : placed.filter((p) => p.col === key).length,
+      // The count is read off the canvas, not derived from a type rule: a header
+      // that says 2 while 22 cards stand under it was the visible symptom of the
+      // column fallback. Notes are counted under the card they explain, so a
+      // lane of 5 gates does not read 32 because 27 rules hang beneath them.
+      count: key === 'core' && !hasActions
+        ? placed.filter((p) => p.col === 'core').length
+        : placed.filter((p) => p.col === key && !(p.home === 'attached')).length,
     })),
+    laneRuns: laneRuns(placed, column.byKey.get('core')),
     phaseRuns: phaseRuns(placed, bandSpans),
   };
+}
+
+/**
+ * The action column, split into the lanes that perform the work.
+ *
+ * `lane` has been in the schema since the first release, described as driving
+ * the swimlane, and until now it only reached the corner of a card. A release
+ * checklist drew `git fetch` and "decide whether the branch is behind" at the
+ * same level — the one distinction that decides whether the reader's job is to
+ * type or to think.
+ *
+ * A card is already filed into the action column by its lane (see `columnOf`),
+ * so the band only has to enclose the contiguous run of cards a lane produced.
+ * One lane filling the whole column is a border around everything, which is a
+ * rule that says nothing, so a single-lane document draws none.
+ */
+const LANE_ORDER: Lane[] = ['tool', 'model', 'reader'];
+const LANE_LABEL: Record<Lane, string> = { reader: '你来做', tool: '命令 / 工具', model: '模型判断', output: '产物' };
+
+function laneRuns(placed: Placed[], column: { x: number; w: number } | undefined): Layout['laneRuns'] {
+  if (!column || placed.length === 0) return [];
+  // Notes ride their owner and share its lane, so they are inside the band
+  // anyway; counting them out of the label keeps "命令 / 工具 4" reading as four
+  // commands rather than four commands plus their remarks.
+  const inLane = placed.filter((node) => node.col === 'core' && node.type !== 'note');
+  const used = LANE_ORDER.filter((lane) => inLane.some((node) => node.lane === lane));
+  if (used.length < 2) return [];
+  // A lane may come back after another one (a command, a judgement, another
+  // command). One bounding box would then swallow the lane in between, so each
+  // contiguous stretch is its own band, in drawing order.
+  const ordered = [...inLane].sort((left, right) => left.y - right.y || left.x - right.x);
+  const runs: Layout['laneRuns'] = [];
+  for (const node of ordered) {
+    const last = runs.at(-1);
+    if (last && last.lane === node.lane) {
+      last.h = node.y + node.h - last.y + LANE_PAD;
+      last.count += 1;
+      continue;
+    }
+    runs.push({
+      lane: node.lane,
+      label: LANE_LABEL[node.lane],
+      x: column.x,
+      w: column.w,
+      y: node.y - LANE_PAD,
+      h: node.h + LANE_PAD * 2,
+      count: 1,
+    });
+  }
+  return runs;
 }
 
 interface RoutePoint { x: number; y: number }
@@ -841,7 +1190,7 @@ function layoutStack(doc: FlowDoc): Layout {
         ...geometry,
         band,
         slot,
-        col: columnOf(members[slot].type),
+        col: columnOf(members[slot]),
         x: left + slot * (cardW + SIBLING_GAP),
         y: cursorY + (bandH - geometry.h) / 2,
         w: cardW,
@@ -872,6 +1221,14 @@ function layoutStack(doc: FlowDoc): Layout {
     bands: bands_,
     columns: [],
     columnHeaders: [],
+    // A straight pipeline still splits by lane: "run this command, then decide"
+    // is the distinction the reader needs even when there is no context column
+    // to put beside it. Widths vary per band here, so the band spans the widest
+    // card the lane produced.
+    laneRuns: laneRuns(placed, {
+      x: Math.min(...placed.map((node) => node.x)),
+      w: Math.max(...placed.map((node) => node.x + node.w)) - Math.min(...placed.map((node) => node.x)),
+    }),
     phaseRuns: phaseRuns(placed, bandSpans),
   };
 }
@@ -1028,7 +1385,7 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
         </div>
       </header>
       <ol class="action-chain" aria-label="按时序排列的关键动作">
-        ${actionNodes.map((node, index) => `<li class="action-step"><button class="action-jump" type="button" data-node-id="${esc(node.id)}"><span class="action-jump-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span><span class="action-jump-copy"><strong>${esc(actionDisplayLabel(node.label))}</strong><small>定位原文与节点</small></span><span class="action-jump-arrow" aria-hidden="true">↗</span></button></li>`).join('\n        ')}
+        ${actionNodes.map((node, index) => `<li class="action-step" data-rank="${String(index + 1).padStart(2, '0')}"><button class="action-jump" type="button" data-node-id="${esc(node.id)}"><span class="action-jump-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span><span class="action-jump-copy"><strong>${esc(actionDisplayLabel(node.label))}</strong><small>定位原文与节点</small></span><span class="action-jump-arrow" aria-hidden="true">↗</span></button></li>`).join('\n        ')}
       </ol>
     </div>
   </div>
@@ -1200,8 +1557,54 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
   body.is-embedded #detail { display: none; }
   body.is-embedded .wrap { max-width: none; padding: 0; }
   body.is-embedded .split { display: block; }
-  body.is-embedded #canvas { min-height: calc(100vh - var(--toolbar-height)); }
-  body.is-embedded #tools { padding-right: 20px; padding-left: 20px; }
+  /* The canvas is the graph's own scroller: without a height bound it grows to
+     the full diagram, so the *page* scrolls and a chip click cannot bring a card
+     into view. Bounding it to the viewport (minus the action chips and toolbar)
+     is what makes revealNode's scrollTop mean something inside the workbench. */
+  body.is-embedded #canvas { height: calc(100vh - var(--toolbar-height) - 168px); min-height: 360px; }
+  body.is-embedded #tools { padding: 6px 20px; }
+  /* In the workbench the action list is a jump bar, not a second cover page.
+     The stand-alone page keeps the headline because it is the page's subject;
+     embedded, that headline would cost ~150px of the pane the reader came for,
+     so the same steps collapse into one scrollable row of chips. */
+  body.is-embedded .action-overview-inner { padding-bottom: var(--space-2); }
+  body.is-embedded .action-overview-head { display: block; padding: 0; border-bottom: 0; }
+  body.is-embedded .action-overview-kicker,
+  body.is-embedded .action-overview-head h2,
+  body.is-embedded .action-overview-head p,
+  body.is-embedded .action-overview-status { display: none; }
+  /* A snake, not a scrolling strip: chips fill a row left→right, the next row
+     right→left, and so on, so the eye walks one continuous path and no action is
+     hidden behind a scrollbar. CSS cannot see where a flex row ends, so the
+     script groups chips by their measured top edge and wraps each group in an
+     action-row element: even rows read left→right, odd rows are ordered
+     backwards and pushed flush right. That places the end of one row directly
+     above the start of the next, which is the whole point of the shape. */
+  body.is-embedded .action-chain {
+    display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: 0 0 2px;
+    overflow: visible;
+  }
+  body.is-embedded .action-chain::before { display: none; }
+  body.is-embedded .action-row { flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+  body.is-embedded .action-row.is-reversed { justify-content: flex-end; }
+  body.is-embedded .action-step { flex: 0 0 auto; max-width: 300px; }
+  body.is-embedded .action-jump {
+    width: auto; min-height: 32px; gap: var(--space-2);
+    padding: 3px 10px 3px 3px;
+    grid-template-columns: 22px minmax(0, 1fr);
+    border: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    border-radius: 999px; background: var(--plate);
+  }
+  body.is-embedded .action-step:last-child .action-jump { border-bottom-color: var(--rule); }
+  body.is-embedded .action-jump-index {
+    width: 22px; height: 22px; border: 0; background: var(--stage-soft); font-size: 9.5px;
+  }
+  body.is-embedded .action-jump-copy small,
+  body.is-embedded .action-jump-arrow { display: none; }
+  body.is-embedded .action-jump-copy strong {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 1.4;
+  }
+  body.is-embedded .action-empty { margin: var(--space-1) 0 0; }
   /* In the workbench the graph should use the available pane instead of
      forcing a horizontal hunt for the artifact lane. Mobile iframes keep the
      intrinsic width so text does not shrink below a readable size. */
@@ -1293,6 +1696,10 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
   .edge.branch { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; }
   .association { fill: none; stroke: var(--note); stroke-width: 1.6; stroke-dasharray: 4 5; stroke-linecap: round; opacity: .9; }
   .association.hot { stroke: var(--signal-dark); stroke-width: 1.8; stroke-dasharray: none; opacity: 1; }
+  /* A note's tie to its owner: one hairline, no arrowhead. The pair already
+     reads as one block; this only says which card the block belongs to. */
+  .note-connector { fill: none; stroke: var(--note); stroke-width: 1.2; stroke-dasharray: 2 3; opacity: .55; }
+  .note-connector.hot { opacity: 1; stroke-width: 1.6; }
   .association-label { fill: var(--muted); font-family: var(--font-mono); font-size: 9px; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }
   .edge-label { fill: var(--accent-2); font-family: var(--font-body); font-size: 11px; paint-order: stroke; stroke: var(--paper); stroke-width: 4px; stroke-linejoin: round; }
   .stepnum { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -1312,6 +1719,13 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
   rect.phase.weak { fill: none; stroke-dasharray: 3 4; }
   .phase-label { fill: var(--ink-2); font-family: var(--font-body); font-size: 11.5px; letter-spacing: .02em; }
   .phase-label.weak { fill: var(--muted); }
+  /* A swimlane is a lane of the action column, not a phase: no fill, one dashed
+     rule, and its name in the lane's own corner. Drawing it as a wash would make
+     it compete with the phase band that carries the author's declared structure. */
+  rect.lane { fill: none; stroke: var(--rule); stroke-width: 1; stroke-dasharray: 4 5; }
+  /* The label lives in the step-number gutter, so it must not run off the left
+     edge: the gutter is 88px and the label is anchored to its right. */
+  .lane-label { fill: var(--muted); font-family: var(--font-mono); letter-spacing: .04em; }
   ::selection { background: var(--accent-soft); }
 
   @media (max-width: 1080px) {
@@ -1588,6 +2002,21 @@ for (const run of (layout.phaseRuns || [])) {
   svg.appendChild(svgEl('rect', { class: 'phase' + weak, x: 20, y: run.y, width: layout.width - 40, height: run.h, rx: ${PHASE_RADIUS}, ry: ${PHASE_RADIUS} }));
 }
 
+/* The swimlanes inside the action column come after the phase wash and before
+   any card, so a lane edge never cuts a plate. A lane only exists when two of
+   them carry cards; when it does, its name is what makes the band readable
+   without a legend. */
+for (const lane of (layout.laneRuns || [])) {
+  svg.appendChild(svgEl('rect', { class: 'lane', x: lane.x - 14, y: lane.y, width: lane.w + 28, height: lane.h, rx: 10, ry: 10 }));
+  // Left of the band, in the step-number gutter: the band's own top edge is
+  // where the previous card's footer ends, and a label there would sit on it.
+  svg.appendChild(svgText(lane.x - 22, lane.y + 12, lane.label + ' · ' + lane.count, {
+    class: 'lane-label',
+    'font-size': 10.5,
+    'text-anchor': 'end',
+  }));
+}
+
 /* The column rails come before the rules so a hairline never cuts through a
    header. An empty column draws no rail: a lane that holds nothing is a promise
    the document does not keep, and the header still names it. */
@@ -1619,6 +2048,12 @@ for (const band of (layout.bands || [])) {
 }
 
 for (const association of (layout.associations || [])) {
+  // An attached note is drawn under its owner, in the owner's column, with a
+  // connector between the two cards. A dashed line across the page would say the
+  // same thing twice and cut through every card in between, so it is drawn only
+  // when the pair is not already adjacent.
+  const from = layout.nodes.find(function (n) { return n.id === association.from; });
+  if (from && from.home === 'attached') continue;
   const path = svgEl('path', {
     d: association.d,
     class: 'association',
@@ -1652,21 +2087,54 @@ for (const run of (layout.phaseRuns || [])) {
   }));
 }
 
+/* A note hangs off its owner: a hairline down the owner's left edge into the
+   note's left edge. Without it the step-in reads as an indentation for no
+   reason; with it the note is visibly attached to exactly one card. */
+const placedById = new Map();
+for (const n of layout.nodes) placedById.set(n.id, n);
+for (const n of layout.nodes) {
+  if (!n.explains) continue;
+  const owner = placedById.get(n.explains);
+  if (!owner) continue;
+  const fromY = owner.y + owner.h;
+  const toY = n.y - 1;
+  if (toY <= fromY) continue;
+  const x = n.x + 7;
+  svg.appendChild(svgEl('path', {
+    d: 'M ' + x + ' ' + fromY + ' L ' + x + ' ' + (toY - 5) + ' L ' + (n.x + n.inset - 1) + ' ' + (toY - 5),
+    class: 'note-connector',
+    'data-from': owner.id,
+    'data-to': n.id,
+  }));
+}
+
 layout.nodes.forEach(function (n, nodeIndex) {
   const tint = 'fill: var(' + (TYPE_VAR[n.type] || '--stage') + ')';
   const cardH = n.cardH || n.h;
-  const g = svgEl('g', { class:'node', 'data-id': n.id, transform: 'translate(' + n.x + ',' + n.y + ')' });
+  // A note's box is its owner's column; the plate is what steps in.
+  const inset = n.inset || 0;
+  const w = n.w - inset;
+  const g = svgEl('g', { class:'node' + (n.home === 'attached' ? ' note-attached' : n.home ? ' note-' + n.home : ''), 'data-id': n.id, transform: 'translate(' + (n.x + inset) + ',' + n.y + ')' });
 
   // The plate: paper-white card, 1px ink rule, and a 3px rule on the top edge
   // carrying the node's type. Fill is not the signal — the type is.
   const plateClipId = 'node-plate-' + nodeIndex;
   const plateClip = svgEl('clipPath', { id: plateClipId });
-  plateClip.appendChild(svgEl('rect', { width:n.w, height:cardH, rx:${CARD_RADIUS}, ry:${CARD_RADIUS} }));
+  plateClip.appendChild(svgEl('rect', { width:w, height:cardH, rx:${CARD_RADIUS}, ry:${CARD_RADIUS} }));
   defs.appendChild(plateClip);
-  g.appendChild(svgEl('rect', { class:'card', width:n.w, height:cardH, rx:${CARD_RADIUS}, ry:${CARD_RADIUS}, fill:'var(--plate)', stroke:'var(--rule-ink)', 'stroke-width':1.1 }));
-  g.appendChild(svgEl('rect', { width:n.w, height:4, 'clip-path':'url(#' + plateClipId + ')', style: tint }));
+  g.appendChild(svgEl('rect', { class:'card', width:w, height:cardH, rx:${CARD_RADIUS}, ry:${CARD_RADIUS}, fill:'var(--plate)', stroke:'var(--rule-ink)', 'stroke-width':1.1 }));
+  g.appendChild(svgEl('rect', { width:w, height:4, 'clip-path':'url(#' + plateClipId + ')', style: tint }));
 
-  const roleLabel = n.type === 'note' && NOTE_ROLE[n.noteRole] ? LABEL[n.type] + ' · ' + NOTE_ROLE[n.noteRole] : LABEL[n.type];
+  const relLabel = n.relation ? RELATION_LABEL[n.relation] : '';
+  // A stacked graph has no owner column, so a note there names its role instead
+  // of a relation: "说明 · 原则" still answers what kind of remark this is.
+  const roleName = NOTE_ROLE[n.noteRole] || '';
+  const roleLabel = n.type === 'note'
+    ? (n.home === 'attached' ? (relLabel ? '说明 · ' + relLabel : '说明')
+      : n.home === 'global' ? '说明 · 全局'
+        : n.home === 'loose' ? '说明 · 孤立'
+          : roleName ? '说明 · ' + roleName : '说明')
+    : LABEL[n.type];
   g.appendChild(svgText(${CARD_PAD_X}, ${CARD_TYPE_BASELINE}, roleLabel, { 'font-size':10.5, 'letter-spacing':'.03em', style: tint }));
 
   (n.lines || [clip(n.label, 40)]).forEach(function (line, i) {
@@ -1685,29 +2153,25 @@ layout.nodes.forEach(function (n, nodeIndex) {
     g.appendChild(svgText(${CARD_PAD_X}, rowTop + i * ${ROW_H}, row, { 'font-size':11, style: 'fill: var(--ink-2)' }));
   });
 
-  g.appendChild(svgEl('line', { x1:1, y1:cardH - ${FOOT_H}, x2:n.w - 1, y2:cardH - ${FOOT_H}, style:'stroke: var(--rule); stroke-width:1' }));
-  const associations = (layout.associations || []).filter(function (a) { return a.from === n.id; });
-  const noteStatus = n.type === 'note'
-    ? (n.associationScope === 'unbound' ? '孤立说明' : n.associationScope === 'skill' ? '全局说明' : associations.length ? RELATION_LABEL[associations[0].relation] : '')
-    : '';
+  g.appendChild(svgEl('line', { x1:1, y1:cardH - ${FOOT_H}, x2:w - 1, y2:cardH - ${FOOT_H}, style:'stroke: var(--rule); stroke-width:1' }));
   const openBranches = n.branches.filter(function (b) { return !b.to; }).length;
-  const statusParts = [noteStatus, openBranches ? openBranches + ' 未落地' : '', n.flags.includes('low-confidence') ? '低置信' : ''].filter(Boolean);
-  const rightStatus = clipToWidth(statusParts.join(' · '), (n.w - ${CARD_PAD_X * 2}) * 0.43, 10.5);
+  const statusParts = [openBranches ? openBranches + ' 未落地' : '', n.flags.includes('low-confidence') ? '低置信' : ''].filter(Boolean);
+  const rightStatus = clipToWidth(statusParts.join(' · '), (w - ${CARD_PAD_X * 2}) * 0.43, 10.5);
   const rightStatusWidth = rightStatus ? textWidthIn(rightStatus, 10.5) : 0;
-  const footMaxWidth = n.w - ${CARD_PAD_X * 2} - (rightStatus ? rightStatusWidth + 16 : 0);
+  const footMaxWidth = w - ${CARD_PAD_X * 2} - (rightStatus ? rightStatusWidth + 16 : 0);
   const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%' +
     (n.rule ? ' · ' + n.rule : '');
   g.appendChild(svgText(${CARD_PAD_X}, cardH - 11, clipToWidth(foot, footMaxWidth, 10.5), { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
 
   if (n.lane) {
-    g.appendChild(svgText(n.w - ${CARD_PAD_X}, ${CARD_TYPE_BASELINE}, LANE[n.lane] || n.lane, {
+    g.appendChild(svgText(w - ${CARD_PAD_X}, ${CARD_TYPE_BASELINE}, LANE[n.lane] || n.lane, {
       'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--muted); letter-spacing:.02em',
     }));
   }
 
   if (rightStatus) {
-    g.appendChild(svgText(n.w - ${CARD_PAD_X}, cardH - 11, rightStatus, {
-      'font-size':10.5, 'text-anchor':'end', style: n.associationScope === 'unbound' ? 'fill: var(--accent); font-family: var(--font-mono)' : 'fill: var(--muted); font-family: var(--font-mono)',
+    g.appendChild(svgText(w - ${CARD_PAD_X}, cardH - 11, rightStatus, {
+      'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--muted); font-family: var(--font-mono)',
     }));
   }
 
@@ -1721,25 +2185,52 @@ layout.nodes.forEach(function (n, nodeIndex) {
     armX += arm.w + 8;
   });
   if ((n.arms || []).length) {
-    g.appendChild(svgText(n.w - 12, cardH + 19, '未落地 ' + n.arms.length, { 'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--accent); font-family: var(--font-mono)' }));
+    g.appendChild(svgText(w - 12, cardH + 19, '未落地 ' + n.arms.length, { 'font-size':10.5, 'text-anchor':'end', style: 'fill: var(--accent); font-family: var(--font-mono)' }));
   }
 
-  g.addEventListener('click', function () { select(n, g, true); });
+  g.addEventListener('click', function (event) {
+    event.stopPropagation();
+    select(n, g, true);
+  });
   g.addEventListener('keydown', function (event) {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     select(n, g, true);
   });
-  g.addEventListener('mouseenter', function () { trace(n.id); });
-  g.addEventListener('mouseleave', function () { trace(null); });
   g.setAttribute('tabindex', '0');
   g.setAttribute('role', 'button');
-  g.addEventListener('focus', function () { trace(n.id); });
-  g.addEventListener('blur', function () { trace(null); });
+  // No mouseenter/mouseleave: the trace belongs to the *selected* card, so that
+  // moving the pointer away does not erase the reading. Hover only previews a
+  // card that is not selected yet.
+  g.addEventListener('mouseenter', function () {
+    if (selectedId !== n.id) trace(n.id);
+  });
+  // Leaving a hovered card goes back to the pinned selection instead of clearing
+  // the picture: moving the pointer should not erase the trace the reader chose.
+  g.addEventListener('mouseleave', function () {
+    if (selectedId === n.id) return;
+    if (selectedId) trace(selectedId);
+    else trace(null);
+  });
+  g.addEventListener('focus', function () {
+    if (selectedId !== n.id) trace(n.id);
+  });
   svg.appendChild(g);
 });
 document.getElementById('canvas').appendChild(svg);
 renderTodos();
+
+/* Clicking the paper clears the selection — and with it the pinned trace. The
+   canvas is the only place that counts as "away"; a click on the toolbar or the
+   detail rail is the reader working with the card they just picked. */
+document.getElementById('canvas').addEventListener('click', function (event) {
+  if (event.target.closest && event.target.closest('.node')) return;
+  const selected = svg.querySelectorAll('.node.sel');
+  for (let i = 0; i < selected.length; i++) selected[i].classList.remove('sel');
+  selectedId = null;
+  trace(null);
+  if (window.parent !== window) window.parent.postMessage({ type: 'annot-node-cleared' }, '*');
+});
 
 /* ---- Tracing: what does this card come from, and what does it lead to? ----
    The graph is 34 cards tall, so a reader who finds step 19 has no way to know
@@ -1759,9 +2250,12 @@ for (const e of [...layout.edges, ...(layout.associations || [])]) {
   IN.get(e.to).push(e.from);
 }
 
+/** The card the trace is pinned to; null means the reader has not picked one. */
+let selectedId = null;
+
 function trace(id) {
   for (const g of svg.querySelectorAll('.node.hot, .node.dim')) g.classList.remove('hot', 'dim');
-  for (const edge of svg.querySelectorAll('.edge.hot, .association.hot')) edge.classList.remove('hot');
+  for (const edge of svg.querySelectorAll('.edge.hot, .association.hot, .note-connector.hot')) edge.classList.remove('hot');
   const readout = document.getElementById('trace');
 
   if (!id) {
@@ -1770,14 +2264,26 @@ function trace(id) {
     return;
   }
 
-  const directUp = IN.get(id) || [];
-  const directDown = OUT.get(id) || [];
+  // A note is tied to its owner by the hairline, not by an association path (that
+  // path is drawn only for notes with no owner). Both directions are wired here
+  // so hovering a note lights the card it explains and vice versa.
+  const ownerOfNote = new Map();
+  const notesOfOwner = new Map();
+  for (const n of layout.nodes) {
+    if (!n.explains) continue;
+    ownerOfNote.set(n.id, n.explains);
+    if (!notesOfOwner.has(n.explains)) notesOfOwner.set(n.explains, []);
+    notesOfOwner.get(n.explains).push(n.id);
+  }
+
+  const directUp = [...(IN.get(id) || []), ...(ownerOfNote.has(id) ? [ownerOfNote.get(id)] : [])];
+  const directDown = [...(OUT.get(id) || []), ...(notesOfOwner.get(id) || [])];
   const hot = new Set([id, ...directUp, ...directDown]);
   svg.classList.add('tracing');
   for (const g of svg.querySelectorAll('.node')) {
     g.classList.add(hot.has(g.getAttribute('data-id')) ? 'hot' : 'dim');
   }
-  for (const edge of svg.querySelectorAll('.edge, .association')) {
+  for (const edge of svg.querySelectorAll('.edge, .association, .note-connector')) {
     if (hot.has(edge.getAttribute('data-from')) && hot.has(edge.getAttribute('data-to'))) edge.classList.add('hot');
   }
 
@@ -1793,9 +2299,14 @@ function trace(id) {
 }
 
 /* ---- Zoom: the canvas reports its own size, so scaling the element is the
-   whole change; the pane keeps its scroll position around the pointer. ---- */
-const ZOOMS = [0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
-let zoom = 3;
+   whole change; the pane keeps its scroll position around the pointer.
+   In the workbench the pane is ~1500px wide and a 900px graph at 100% leaves two
+   thirds of it as paper, so the page opens at 60% — the smallest step that still
+   keeps 13px labels legible — and never goes below 20%. Zoom is the reader's
+   tool, not a default they have to correct first. ---- */
+const ZOOMS = [0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
+const DEFAULT_ZOOM = 4; // 0.6
+let zoom = DEFAULT_ZOOM;
 
 function applyZoom(next, anchor) {
   zoom = Math.max(0, Math.min(ZOOMS.length - 1, next));
@@ -1831,7 +2342,9 @@ document.getElementById('zoom-in').addEventListener('click', function () { apply
 document.getElementById('zoom-out').addEventListener('click', function () { applyZoom(zoom - 1); });
 document.getElementById('zoom-reset').addEventListener('click', function () {
   const pane = document.getElementById('canvas');
-  applyZoom(3);
+  // Reset goes back to the default reading scale (60%), not to 100%: 100% is a
+  // magnification step in this pane, and returning to it would undo the fit.
+  applyZoom(DEFAULT_ZOOM);
   pane.scrollTop = 0;
   pane.scrollLeft = 0;
 });
@@ -1851,11 +2364,16 @@ window.addEventListener('resize', function () {
   window.requestAnimationFrame(function () { applyZoom(zoom); });
 });
 
+/* Open at the reading scale. The responsive CSS fits the SVG to the pane before
+   the first interaction, which is why the default label said 100% while the page
+   claimed 60% — the constant was set but never applied. */
+window.requestAnimationFrame(function () { applyZoom(DEFAULT_ZOOM); });
+
 document.addEventListener('keydown', function (event) {
   if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
   if (event.key === '+' || event.key === '=') { event.preventDefault(); applyZoom(zoom + 1); }
   else if (event.key === '-') { event.preventDefault(); applyZoom(zoom - 1); }
-  else if (event.key === '0') { event.preventDefault(); applyZoom(3); }
+  else if (event.key === '0') { event.preventDefault(); applyZoom(DEFAULT_ZOOM); }
   else if (event.key === '/') { event.preventDefault(); document.getElementById('find').focus(); }
 });
 
@@ -1938,6 +2456,9 @@ function select(n, g, notifyParent) {
   const selected = svg.querySelectorAll('.node.sel');
   for (let i = 0; i < selected.length; i++) selected[i].classList.remove('sel');
   g.classList.add('sel');
+  // Pin the trace to the selection: the pointer can leave, the reading stays.
+  selectedId = n.id;
+  trace(n.id);
   if (notifyParent && window.parent !== window) window.parent.postMessage({ type: 'annot-node-selected', id: n.id }, '*');
 
   const flags = n.flags.map(function (f) {
@@ -1970,7 +2491,16 @@ function select(n, g, notifyParent) {
     '<h2>这一段原文</h2><pre class="body">' + escapeHtml(n.raw) + '</pre>';
 }
 
-function revealNode(id) {
+/**
+ * Do not use the browser's element-scroll helper here.
+ *
+ * The embedded graph is an iframe; scrolling one of its elements into view walks
+ * up to the parent document and moves the workbench's own pane, which is how
+ * clicking step 02 made the page jump while the graph stayed put. Everything is
+ * scrolled by setting the canvas' own scrollTop, and the canvas is already on
+ * screen because the reader clicked a chip in it.
+ */
+function revealNode(id, notify) {
   const node = layout.nodes.find(function (candidate) { return candidate.id === id; });
   if (!node) return;
   const groups = svg.querySelectorAll('.node');
@@ -1979,7 +2509,7 @@ function revealNode(id) {
     if (groups[i].getAttribute('data-id') === id) { group = groups[i]; break; }
   }
   if (!group) return;
-  select(node, group, true);
+  select(node, group, notify !== false);
   const buttons = document.querySelectorAll('.action-jump');
   for (let i = 0; i < buttons.length; i++) {
     const active = buttons[i].getAttribute('data-node-id') === id;
@@ -1988,11 +2518,12 @@ function revealNode(id) {
   }
   const pane = document.getElementById('canvas');
   if (!pane) return;
+  // Center the card in the viewport instead of pinning it to the top edge: the
+  // chip list is right above the canvas, so a card at scrollTop 0 sits under it.
   const scale = Number(svg.getAttribute('height')) / layout.height || 1;
-  pane.scrollTop = Math.max(0, node.y * scale - 24);
+  const target = node.y * scale + (node.h * scale) / 2 - pane.clientHeight / 2;
+  pane.scrollTop = Math.max(0, target);
   pane.scrollLeft = 0;
-  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  pane.scrollIntoView({ block: 'start', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
 }
 
 const actionButtons = document.querySelectorAll('.action-jump');
@@ -2002,7 +2533,75 @@ for (let i = 0; i < actionButtons.length; i++) {
   });
 }
 
+/* The chip row is a snake: row 1 reads left→right, row 2 right→left, and so on,
+   so the next step always starts where the previous one ended instead of jumping
+   back to the left margin on every wrap.
+   Flexbox cannot express "reverse this row" — row-reverse reverses the whole
+   container — so the script reverses the DOM order of every odd row and lets the
+   auto margin right-align it. Chip widths are untouched, which keeps the wrap
+   points stable while the reorder runs. Rows are found by their measured top
+   edge, which is the only thing that knows where the browser actually wrapped. */
+const actionChain = document.querySelector('.action-chain');
+function snakeChips() {
+  if (!actionChain || !document.body.classList.contains('is-embedded')) return;
+  const steps = Array.prototype.slice.call(actionChain.querySelectorAll('.action-step'))
+    .sort(function (a, b) { return Number(a.getAttribute('data-rank')) - Number(b.getAttribute('data-rank')); });
+  if (steps.length < 2) return;
+  // Unwrap first: measuring a previous run's rows would just re-measure itself.
+  for (const row of Array.prototype.slice.call(actionChain.querySelectorAll('.action-row'))) row.remove();
+  const probe = document.createElement('div');
+  probe.className = 'action-row';
+  actionChain.appendChild(probe);
+  for (const step of steps) probe.appendChild(step);
+  // Where the browser actually wrapped is the only source of truth for a row
+  // break, so group by measured top edge while everything is in one flex line.
+  const rows = [];
+  let top = null;
+  for (const step of steps) {
+    if (top === null || Math.abs(step.offsetTop - top) > 1) {
+      rows.push([]);
+      top = step.offsetTop;
+    }
+    rows[rows.length - 1].push(step);
+  }
+  actionChain.removeChild(probe);
+  // Even rows read left→right; odd rows are reversed and flush right, so the
+  // step after the last chip of a row starts directly beneath it rather than
+  // jumping back to the left margin.
+  rows.forEach(function (row, index) {
+    const line = document.createElement('div');
+    line.className = 'action-row' + (index % 2 === 1 ? ' is-reversed' : '');
+    for (let i = 0; i < row.length; i++) {
+      line.appendChild(index % 2 === 1 ? row[row.length - 1 - i] : row[i]);
+    }
+    actionChain.appendChild(line);
+  });
+}
+snakeChips();
+window.addEventListener('resize', function () {
+  window.requestAnimationFrame(snakeChips);
+});
+
+/* Embedded in the workbench, the graph is the picker for the right-hand
+   drawer. The host asks for a card to be selected when the reader arrives from
+   a standards finding instead of from the canvas; the notify flag stays false
+   so the message does not bounce straight back to the host. */
+window.addEventListener('message', function (event) {
+  if (!event.data || event.data.type !== 'annot-select-node' || typeof event.data.id !== 'string') return;
+  revealNode(event.data.id, false);
+});
+
 const firstNode = layout.nodes.find(function (n) { return n.type === 'stage'; }) || layout.nodes[0];
-const firstGroup = firstNode ? svg.querySelector('.node') : null;
-if (firstNode && firstGroup) select(firstNode, firstGroup, false);
+/* Select the group that *is* that node. This used to take the first node group in
+   the document regardless of which one firstNode named, so the highlighted card
+   and the detail panel could describe two different steps — and the pinned trace
+   lit the wrong subgraph. Nothing is selected when the reader arrives from the
+   workbench, which lets the host decide whether to open a card at all; when it
+   does select one, the first card is what it asks for. */
+if (firstNode && !document.body.classList.contains('is-embedded')) {
+  const firstGroup = Array.prototype.find.call(svg.querySelectorAll('.node'), function (g) {
+    return g.getAttribute('data-id') === firstNode.id;
+  });
+  if (firstGroup) select(firstNode, firstGroup, false);
+}
 `;

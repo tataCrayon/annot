@@ -36,7 +36,7 @@ async function cli(argv: string[]): Promise<{ code: number; out: string; err: st
 test('the usage text lists every command it accepts', async () => {
   const { code, err } = await cli(['nope']);
   assert.equal(code, 1);
-  for (const command of ['annotate', 'ai-prompt', 'ai-evaluate', 'check', 'list', 'search', 'audit', 'review', 'context', 'render', 'verify', 'web', 'workbench']) {
+  for (const command of ['annotate', 'ai-prompt', 'ai-evaluate', 'check', 'list', 'search', 'audit', 'review', 'repair', 'context', 'render', 'verify', 'web', 'workbench']) {
     assert.match(err, new RegExp(command), `usage does not mention ${command}`);
   }
 });
@@ -156,4 +156,35 @@ test('review reports deterministic standards without claiming an effect score', 
   assert.ok(report.checks.some((check: { id: string }) => check.id === 'references-exist'));
   assert.equal(report.evaluation.stages.length, 5);
   assert.equal(report.evaluation.boundary.includes('不等同于效果验证'), true);
+  assert.equal(report.source_sha.length, 64);
+});
+
+test('repair turns failing checks into a task and refuses stale check ids', async () => {
+  const file = join(here, 'fixtures', 'grill-method.md');
+  const all = await cli(['repair', file, '--json']);
+  assert.equal(all.code, 0, all.err);
+  const task = JSON.parse(all.out);
+  assert.equal(task.writesSource, undefined);
+  assert.equal(task.source_sha.length, 64);
+  assert.ok(task.targets.length > 0);
+  assert.match(task.task, /没有修改任何 Skill 文件/);
+  assert.match(task.task, /annot review/);
+
+  const single = await cli(['repair', file, '--check', 'note-coverage', '--json']);
+  assert.equal(single.code, 0, single.err);
+  assert.deepEqual(JSON.parse(single.out).targets.map((item: { id: string }) => item.id), ['note-coverage']);
+
+  const unknown = await cli(['repair', file, '--check', 'not-a-check']);
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.err, /unknown check id/);
+
+  // A check that already passes means the caller's view is stale; "nothing to
+  // do" would hide that, so it is an error with a sentence saying why.
+  const passing = await cli(['repair', file, '--check', 'name']);
+  assert.equal(passing.code, 1);
+  assert.match(passing.err, /not failing, nothing to repair: name/);
+
+  const missing = await cli(['repair']);
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /repair needs a skill directory/);
 });

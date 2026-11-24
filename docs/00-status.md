@@ -1,6 +1,6 @@
 # 状态：共享引擎、DSH 插件、Codex 插件与本地网页
 
-> 写于 2026-11-19。给下一个接手的人（或下一个会话）看的第一份文件。
+> 写于 2026-11-19，最后更新 2026-11-24（0.2.0）。给下一个接手的人（或下一个会话）看的第一份文件。
 > 这里只写"现在是什么"，不写"为什么"。为什么在 `docs/02`。
 
 ## 一句话
@@ -10,8 +10,8 @@
 ## 现在能跑的东西
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 240 个测试，全绿
-bash sandbox/run.sh                          # 7 段隔离验收，17 条断言，全绿
+node --test test/*.test.ts test/*.test.js   # 268 个测试，全绿
+bash sandbox/run.sh                          # 7 段隔离验收，19 条断言，全绿
 node src/cli.ts annotate <skill-dir> --out <dir>
 node src/cli.ts search <词> -- <root...>
 node src/cli.ts check <flow.json>
@@ -169,6 +169,78 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 
 `node --test test/*.test.ts test/*.test.js` = **177 条全绿**；`bash sandbox/run.sh` 7 段 17 条全绿；五份真实 skill（`release-checklist` / `agent-dev-standards` / `challenge` / `archery-query` / `grill-method`）四视口 `annot verify` 全绿。
 
+## 这一轮：诊断 → 修复任务（2026-11-23）
+
+用户的反馈很具体：工作台已经能诊断出「存在阻断项」，但页面上**没有一条路能把它修掉**——唯一的按钮是「生成评估任务」。诊断和修复之间断了，断言再准也只是报错。
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| `hallmark` 被判「存在阻断项」 | `descriptionCheck` 把 `<`/`>` 判成违规。Agent Skills 规范只约束非空与 ≤1024 字符；Claude Code 对 `description` 里的尖括号只是转义，`<`/`>` 的禁令属于 `name` | 降为 `warn`，文案改成「规范允许，宿主展示会转义」。`hallmark` 由 blocked 变为 review |
+| 阻断项无法变成修复动作 | `StandardCheck` 只有描述，没有改法和位置；`/api/brief` 只有 rewrite/analyze/evaluate 三种模式 | 每条检查新增 `remedy` 与 `lines[]`；新增 `src/repair.ts` 与 `annot repair`；`/api/brief` 增加 `mode: "repair"` |
+| 修复任务可能改错行 | 任务若只写「description 有问题」，宿主得自己找位置，猜就会落到别的段落 | 任务内嵌**当前原文的逐字摘录 + 行号**，并要求先核对摘录；没有定位到行的检查明写「位置未定位」，不许猜 |
+| 修完没有判定口径 | 无 | 每项写死「`annot review` 里该项变成 pass，且没有新增 fail/warn」；`--check` 指向已通过项时 exit 1，因为那通常意味着调用方看的是旧文件 |
+
+`annot repair <SKILL.md> [--check <id,...>]` 与 `POST /api/brief { mode: "repair", checks? }` 输出同一份任务文本。工作台三处入口都接上了：就绪卡片、单条未通过项（`data-repair-check`）、整库问题列表（`issue.check`）。
+
+**验证**：`test/repair.test.ts`（6 条，钉住「摘录逐字等于源码」「没有定位就不编造」）、`test/standards.test.ts`（新增尖括号判定与「每条失败项都带 remedy + 行号」）、`test/web.test.ts`（新增 repair 路由 200/400/409 与源码不变）。`sandbox/repair-ui-check.mjs` 是**真浏览器**验收：17 条断言覆盖三个入口点开原生 dialog、任务带标题/哈希/行号/验收条件，以及「网页不写文件」。本机 hallmark 实测 17/17。
+
+## 这一轮：泳道、AI-only 管线、任务落盘（2026-11-23 第二轮）
+
+第一张截图暴露的不是配色问题，是**几何与语义来源**问题：account-research 有 19 个门禁、2 个动作，画出来的图把门禁堆进了「关键动作 2」那一列，真正的上下文列空着；用户要的自由泳道（`lane`）从第一版起就写在 schema 里，却只印在卡片角上。
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| 「关键动作 2」下站着 22 张卡 | `layoutColumns` 里有一句「这一行没有 stage 就让 side 卡借位进 core 列」；列头计数又按类型另算 | 删掉借位（只有整篇没有动作时，上下文列才升为主列）；列头计数直接数画出来的卡 |
+| 泳道不存在 | 布局只读 `NodeType`，`lane` 从未参与坐标 | `columnOf(node)` 改成读泳道：`tool` 进动作列，`stage` 进动作列，其余进上下文列；动作列里连续的同泳道段画虚线泳道带并标人数，单泳道不画 |
+| 有分支边的 Skill 整张图退回单列 | `layoutNodes` 见到 branch 边就 `layoutStack` | 分支只影响深度，不再影响列；三列布局保留 |
+| 图靠关键词规则生成 | 网页在没有 `.annot/analyses/*.json` 时静默回退到 `flow.ts` 的规则草案 | 网页无分析 → 409 + 空态（生成/复制分析任务、显示应写入路径）；`annot annotate` 无 `--analysis` 直接拒绝；`--rules` 成为显式遗留开关 |
+| AI 不知道主干是什么 | 分析任务只描述节点类型，没说要按 `Step N` 建主干，也没说 `edges` 必填 | 任务新增「主干契约」「泳道契约」；`buildFlowFromAnalysis` 拒绝「多个可执行节点但零边」的提案 |
+| 没有「发给 Claude Code」 | 只有剪贴板 | `annot analyze` 一条命令产出任务；`POST /api/tasks` 把任务写到 `.annot/tasks/` 并返回 `claude -p "$(cat …)"`（Windows 用 `Get-Content -Raw`）；弹窗新增「保存为任务文件」，并如实报告 PATH 里有没有 `claude` |
+| 评估入口像只在规范页有 | 抽屉里详情/修改/评估上下堆叠，锚定原文把评估推到首屏外 | 抽屉头部固定三个 Tab，未选中卡片时修改置灰、评估可用 |
+
+**验证**：`npm test` 262 条全绿（新增 `test/lanes.test.ts` 4 条：工具卡进动作列、单泳道不画带、泳道带不压别道卡片、AI 给的 lane 原样进布局；`test/web.test.ts` 新增无分析 409 与 `/api/tasks` 落盘两条）；`bash sandbox/run.sh` 7 段全绿（step 3 改用 `--rules`，因为它验的是锚点与漂移，不是语义）。
+
+## 这一轮：默认缩放、跳转、泳道对齐与评估入口（2026-11-23 第三轮）
+
+用户的四条反馈，前三条都能用一句「默认值与容器」解释：
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| 缩放停在 100%，只能到 60% | `ZOOMS` 第一档是 0.6、`DEFAULT_ZOOM` 写了但加载时从未调用 `applyZoom`，页面停在响应式 CSS 的「铺满画布」 | 加载时显式应用 60%；档位改为 0.2–2.0，重置键与 `0` 键都回 60% |
+| 点动作胶囊 02 页面跳、图不动 | `revealNode` 用 `scrollIntoView`，在 iframe 里它会滚动祖先文档；同时嵌入模式画布 `min-height: 100vh`，画布自身永远不可滚动 | 画布改为固定高度的自有滚动容器；跳转只设 `canvas.scrollTop` 并居中目标卡（浏览器实测 1/5/10 号胶囊都落在视口内） |
+| 节点与列头/泳道对不上 | 之前那份 `account-research` 图是规则草案：19 个门禁堆进动作列 | 写了一份真实的 AI 分析（28 节点 / 17 边 / 泳道 25 你·1 工具·2 产物），落在 `.annot/analyses/account-research.analysis.json`；布局实测 core=12 / side=9 / artifact=2 / scope=3，泳道带 3 段且计数与卡片一致 |
+| 右侧抽屉里同时有详情、修改、评估 | 评估是整份 Skill 的事，却被挂在一张卡的 Tab 条里 | 抽屉只留「卡片详情 / 自然语言修改」；「设计 Skill 评估」移到动作图 Tab 条右侧，点开独立 dialog（指标 + 意图 → 任务 → 复制或保存为文件） |
+
+**验证**：`npm test` 263 条全绿（新增 `test/render.test.ts` 的默认缩放用例）；`annot verify` 在 4 个视口对这份真实图全绿（28 节点、无横向滚动）；真 Chrome 实测胶囊跳转与缩放档位。
+
+## 这一轮：后台进程、选中追踪、抽屉顺序（2026-11-23 第四轮）
+
+用户看到的「改了没生效」，一半是**进程**问题，一半是交互问题：
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| 缩放还是 100%，最低只到 60% | 工作台是**后台常驻进程**，浏览器重启不重启它；`workbench open` 看到端口上有服务就直接复用，哪怕它加载的是旧代码 | `GET /api/status` 增加 `build`（web.ts + render.ts 的内容指纹）；`annot workbench status` 同时报 `build` 与 `currentBuild`；`workbench open` 发现受管进程指纹过期时自动重启 |
+| 选中卡片后移开指针，高亮就没了 | 追踪绑定在 `mouseenter/mouseleave` 上，与「选中」无关 | 选中即钉住追踪；悬停别的卡只是预览，移开回到选中卡；点画布空白才取消（并通知宿主清空抽屉） |
+| 右侧的修改入口要再点一次 Tab | 详情与修改被拆成 Tab，而两者主体都是同一张卡 | 抽屉改回单一阅读顺序：事实 → 原文 → 分支 → 修改表单；未选中时不打开抽屉 |
+| 内嵌图首张卡高亮与右侧内容可能不一致 | 初始化时取的是「第一个 `.node`」，不是 `firstNode` 对应的那个 | 按 `data-id` 找组；内嵌模式不再自动预选，由宿主决定 |
+
+**验证**：`npm test` 263 条全绿；真 Chrome 实测追踪状态机（选中 3 hot / 25 dim → 移开不变 → 悬停他卡 2/26 → 移开回 3/25 → 点空白 0/0 且 `tracing` 关闭）；`annot verify` 4 视口全绿。
+
+## 这一轮：单一分析路径、过期分析与全库分析（2026-11-24，0.2.0）
+
+这一轮没有新增能力，全部是把已有的路修直。每一条都来自同一个问题：**分析写对了，页面看不到**。
+
+| 症状 | 真因 | 改法 |
+|---|---|---|
+| 修完 Skill 后网页报 `invalid request` | 修复改了源字节，旧提案的 `source_sha` 对不上；这个「正常过期」落进了 `handleRequest` 的兜底 catch，被统一回成 400 | 新增 `StaleAnalysisError`，把哈希不匹配从 `AnalysisValidationError` 里分出来；`/api/flow`、`/api/graph`、`/api/context`、`/api/brief`、`/api/tasks` 一律回 `409 { reason: "stale-analysis", proposalSha, currentSha, analyze: true }`；空画布卡片分「没有语义分析」与「语义分析已过期」两态，过期态把两版 sha 前 12 位写出来 |
+| 宿主按任务写完分析，页面仍然空白 | `annot analyze` 打印提交路径是 `.annot/analyses/<skill>.analysis.json`，但写进任务正文的交付步骤是 `.annot/<skill>/analyses/...`——多一层目录，网页根本不读 | `buildAnalysisPrompt` 接受 `analysisPath`，交付步骤、提交路径、`annot annotate` 命令、工作台 `/api/brief` 四处的路径由调用方传入同一个值；`proposalFileName()` 成为唯一命名来源 |
+| 修复任务只说「检查项 pass」 | 修复必然让锚点过期，「修好了」与「图能重新画出来」是两件事，但任务只写了前者 | `buildRepairPlan` 接受 `analysisPath`，验收里明确两步：`annot analyze` 覆盖提案（旧锚点会被拒绝，这是预期），再 `annot annotate --analysis` 重建图 |
+| 评估弹窗里的「全选」点了没用 | 监听绑在 `#node-detail` 上，而表单渲染在挂到 `body` 的 `<dialog>` 里，事件不经过那个容器 | 改成 `document` 级委派（click 全选、change 同步按钮文案） |
+
+**全库跑了一遍**：44 个 Skill 有 AI 语义分析并渲染出图（574 个节点），覆盖常用工作流 39 个、annot 自身 3 个、`review-agent` 与 `agent-dev-standards`。分析过程中发现的确定性错误改了 9 个 SKILL.md：死引用 `unit-test-master`、复制残留的「派生自 fullstack」、被截断的句子、两个 `## 七、`、跳号的通知步骤、「三个必踩的坑」实际四条、两处写死的本机绝对路径、三处 `~/.claude/skills` 与实际安装位置不符。改完 23 ready / 17 review / 0 blocked；源文件一改就让对应提案过期，因此这些提案按「唯一命中」重定位后由同一个校验器重新盖章，没有一条是手工改行号。
+
+**验证**：`npm test` 268 条全绿（新增 stale-analysis 409 全路由、`document` 级全选委派、修复任务必须点名提案路径三条）；44 个提案全部通过 `annot annotate`，工作台 build 指纹与磁盘一致。
+
 ## 已知的洞（按严重度）
 
 | # | 洞 | 影响 | 下一步 |
@@ -185,6 +257,10 @@ node sandbox/m3-experiment.ts                # M3 验收实验，见下
 | 10 | eval 执行层尚未实现 | 已能生成配对评估与优化计划，但 baseline/Skill 运行、断言执行和 benchmark 汇总仍交给宿主或外部 harness | 接入 harness 后，把运行产物回填到统一报告 |
 | 11 | Codex 新 Agent 尚未在新会话中调用 | `annot@annot-local` 已安装、启用并刷新为三个 Skill 加 Agent 的缓存；当前进程仍可能保留启动时的能力清单 | 重启 Codex 后在新会话发起一次分析与一次评估，记录实际调用 |
 | 12 | ZCode 插件尚未在宿主 UI 安装 | manifest 已通过 ZCode 0.17.3 校验，本地 market 与三个 Skill 已生成；用户尚未完成市场添加和安装 | 在 ZCode 添加 `D:\Projects\flp\vibeskill\plugins`，安装 Annot 后新建任务试跑 |
+| 13 | 修复任务无法逐项自动验收 | `annot repair` 给了每项的判定命令，但没有一个「修完自动跑 review 并标记 14 项里哪几项真的变了」的回路；现在仍靠宿主回读 | 让 `annot repair --verify` 记录生成时的 `source_sha` 与逐项状态，修完后按 sha 差异报告「已修/未变/新增」 |
+| 14 | extraction 类问题没有修复指引 | 整库报告里的 `空卡片` / `分隔线标签` / `未落地分支` 来自 `audit`，不是标准检查，因此 `annot repair` 不覆盖它们 | 为 `src/audit.ts` 的四类缺陷也补 remedy，让 repair 支持 `extraction:*` 项 |
+| 15 | 整库审计仍走规则抽取 | `audit` / `library-report` / `standards` 的说明覆盖检查读的是 `flow.ts` 的规则结果，而工作台画的是 AI 分析 | 同一批 Skill 会出现「图里 40 个节点、审计说 81 个节点」这类口径差 | 给这三个入口增加 `--analysis-dir`，有提案时用 AI 图计算，没有时在报告里显式标「规则估计」 |
+| 16 | 只有 44/86 个 Skill 有 AI 分析 | 工作台对另外 42 个显示「没有语义分析」空态；`audit` 对它们仍用规则结果打分 | 按同样规程补齐剩余 42 个：读原文 → 写提案 → 校验器盖章 → 渲染 |
 
 ## 目录里有什么
 
@@ -199,7 +275,7 @@ plugin/      DSH 宿主壳（JS，无构建）
   client.js  侧边栏行 + 主区页面，经 __ModuleLoader__ 注册
 plugins/     Codex Skill/Agent 插件、ZCode Skill 插件与两套本地 marketplace 清单
 web/         独立本地工作台静态资源，由 `annot web` 提供
-test/        242 个测试，覆盖 core、统一工作台守护进程、DSH、Codex manifest 与 Agent、ZCode manifest 与 Skill 同步、本地网页、AI 分析提案、评估任务、可配置扫描根、说明关联与浏览器渲染
+test/        268 个测试，覆盖 core、统一工作台守护进程、DSH、Codex manifest 与 Agent、ZCode manifest 与 Skill 同步、本地网页、AI 分析提案、评估任务、可配置扫描根、说明关联与浏览器渲染
 sandbox/     隔离验收脚本，不碰真实 ~/.agents；m3-experiment.ts 是 M3 验收实验
 tools/       人眼工具：inspect（表）/ explain（反查）/ probe-panel（打 GUI）
 docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照
@@ -242,7 +318,7 @@ docs/        01 形态调研 / 02 决策与里程碑 / 03 借用能力对照
 
 ### 规范证据与任务输出回归
 
-- 标准检查的 `note-coverage` 返回孤立说明的节点 ID、标签和源码行范围；网页显示“定位 N 条孤立说明”，点击后切回动作图、打开卡片栏并筛选 `unbound`。
+- 标准检查的 `note-coverage` 返回孤立说明的节点 ID、标签和源码行范围；网页显示“定位 N 条孤立说明”，点击后切到动作图、选中第一条孤立说明，右侧抽屉随之打开并显示它的锚定原文。
 - 动作摘要桌面左右内缩 48px、窄屏 32px；`annot verify` 在真实浏览器中检查标题、说明、动作区和数量标签的保护间距。
 - 评估指标提供“全选/清空”开关，手动勾选会同步按钮状态；8 个指标可一次全部选中。
 - 分析、修改、评估任务生成后自动打开原生 `dialog`。桌面弹窗宽度上限 1080px、高度上限 86vh，移动端保留 8px 外边距；复制和关闭均位于弹窗内。
@@ -258,7 +334,7 @@ Codex 包位于 `plugins/annot/`，portable 根 `plugin.json` 与 `skills/annot/
 左侧 Skill 库已合并信息层级：「扫描目录」置顶，可勾选常见工具根、追加自定义路径、应用后立即重扫，并可用「恢复默认」撤销。选择写入 `.annot/web-roots.json`，服务重启后继续生效；配置路径可用 `--root-config` 隔离。该写入只保存扫描范围，仍不写任何 Skill 源文件。主工作台与 QA 工作台使用不同配置文件，避免多实例互相覆盖。
 工作台顶部提供三个独立入口：
 
-- **Skill 库**：浏览单个 Skill、动作图、卡片上下文和自然语言任务。
+- **Skill 库**：浏览单个 Skill 的动作图；右侧抽屉只由图上选中的卡片驱动，展示锚定原文、事实、自然语言修改和评估入口，不再提供节点列表与节点搜索。
 - **整库评估**：`GET /api/library-report` 一次汇总全部 Skill 的静态规范、资源引用、孤立说明和抽取结构问题；报告可按阻断/建议筛选，并导出 Markdown/JSON。未执行行为 eval 的 Skill 全部标为 `unmeasured`。
 - **版本管理**：`POST /api/snapshots` 将 Skill 路径、内容 hash 与原文保存到 `.annot/snapshots/`；`GET /api/snapshots/diff` 比较新增、修改和移除项。相同内容指纹在时间线中合并显示，但仍保留捕获次数；恢复动作只生成宿主任务。
 

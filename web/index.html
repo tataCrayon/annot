@@ -112,18 +112,13 @@
           </button>
           <button id="toggle-node-panel" class="command-card understand" type="button" aria-controls="node-drawer" aria-expanded="false">
             <span class="command-kicker">理解</span>
-            <strong>查看卡片上下文</strong>
-            <span>定位原文、类型和锚点</span>
+            <strong>选中卡片详情</strong>
+            <span>在图中点卡片，右侧看来源与锚点</span>
           </button>
           <button id="rewrite-skill" class="command-card modify" type="button">
             <span class="command-kicker">修改</span>
             <strong>自然语言修改</strong>
             <span>只改锚定节点，生成宿主任务</span>
-          </button>
-          <button id="evaluate-skill" class="command-card evaluate" type="button">
-            <span class="command-kicker">评估</span>
-            <strong>评估与优化</strong>
-            <span>选择指标，或直接用自然语言描述</span>
           </button>
         </section>
 
@@ -132,6 +127,7 @@
           <button id="standards-tab" class="tab" type="button" aria-pressed="false">规范与评估 <span id="standards-badge">待查</span></button>
           <button id="audit-tab" class="tab" type="button" aria-pressed="false">整库审计 <span id="audit-count">0</span></button>
           <span class="source-stamp">内容哈希 <code id="source-sha">等待生成</code></span>
+          <button id="evaluate-skill" class="evaluate-entry" type="button">设计 Skill 评估</button>
         </nav>
 
         <section id="graph-view" class="graph-view" aria-label="Skill 动作图">
@@ -157,6 +153,10 @@
                 </div>
               </header>
               <div id="standards-loading" class="standards-loading" role="status">正在检查当前 Skill…</div>
+              <div id="standards-repair-bar" class="standards-repair-bar" hidden>
+                <button id="standards-repair" class="button primary" type="button">生成修复任务</button>
+                <p id="standards-repair-note">按检查项生成宿主任务：带行号、当前原文和每项的验收条件。</p>
+              </div>
               <div id="standards-groups" class="standard-groups"></div>
             </article>
 
@@ -271,19 +271,17 @@
       <div id="global-error" class="global-error" role="alert" hidden></div>
     </main>
 
-  <aside id="node-drawer" class="node-drawer" aria-label="卡片上下文与改进" aria-hidden="true" hidden>
+  <aside id="node-drawer" class="node-drawer" aria-label="选中卡片" aria-hidden="true" hidden>
     <header class="drawer-heading">
-      <div>
-        <h2>定位、修改与评估</h2>
+      <div class="drawer-heading-copy">
+        <p class="section-eyebrow">Selected card</p>
+        <h2 id="drawer-title" tabindex="-1">选中卡片</h2>
       </div>
-      <span id="node-total" class="drawer-count">0 动作 / 0 卡片</span>
+      <span id="drawer-summary" class="drawer-count">等待动作图</span>
       <button id="close-node-panel" class="icon-button" type="button" aria-label="收起工作侧栏">收起</button>
     </header>
-    <label class="sr-only" for="node-search">筛选动作卡片</label>
-    <input id="node-search" class="node-search" type="search" placeholder="筛选动作、说明、类型或行号">
-    <ul id="node-list" class="node-list" aria-label="动作卡片"></ul>
     <section id="node-detail" class="node-detail" aria-live="polite">
-      <p class="empty-detail">选择一张卡片查看来源，或从顶部打开效果评估。</p>
+      <p class="empty-detail">在左侧动作图里点一张卡片，这里显示它的类型、来源行和原文。</p>
     </section>
   </aside>
   </div>
@@ -299,7 +297,9 @@
     </header>
     <pre id="brief-dialog-text" class="brief-dialog-text" tabindex="0"></pre>
     <footer class="brief-dialog-actions">
-      <button id="copy-brief-dialog" class="button primary" type="button">复制完整任务</button>
+      <div id="brief-dialog-command" class="task-command-box" hidden></div>
+      <button id="copy-brief-dialog" class="button secondary" type="button">复制完整任务</button>
+      <button id="save-brief-dialog" class="button primary" type="button" hidden>保存为任务文件</button>
     </footer>
   </dialog>
 

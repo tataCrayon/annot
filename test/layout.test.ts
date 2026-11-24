@@ -132,6 +132,59 @@ test('the three columns are drawn as columns, not as stacked rows', () => {
   // Left to right: core, then gates, then artifacts.
   const coreRight = Math.max(...core.map((n) => n.x + n.w));
   assert.ok(Math.min(...gate.map((n) => n.x)) > coreRight, 'the gate column is left of the main path');
+
+  // The scope rail is last and holds only notes with no owner. It exists so a
+  // Skill-wide principle is not drawn where an executable step stands.
+  const scope = layout.nodes.filter((n) => n.col === 'scope');
+  if (scope.length > 0) {
+    assert.ok(scope.every((n) => n.type === 'note' && !n.explains), 'an owned card was drawn on the scope rail');
+    const artifactRight = artifacts.length ? Math.max(...artifacts.map((n) => n.x + n.w)) : coreRight;
+    assert.ok(Math.min(...scope.map((n) => n.x)) >= artifactRight, 'the scope rail is not the rightmost column');
+    assert.deepEqual(
+      layout.columns.map((column) => column.key),
+      ['core', 'side', 'artifact', 'scope'],
+      'the columns are not drawn in reading order',
+    );
+  }
+});
+
+test('a note hangs under the card it explains, in that card\'s column', () => {
+  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+  const notes = layout.nodes.filter((node) => node.type === 'note' && node.explains);
+  assert.ok(notes.length > 0, 'the fixture has no attached note');
+
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  for (const note of notes) {
+    const owner = byId.get(note.explains!);
+    assert.ok(owner, `${note.id} names an owner that is not drawn`);
+    assert.equal(note.col, owner.col, `${note.id} left its owner's column (${owner.col})`);
+    assert.ok(note.y >= owner.y + owner.h, `${note.id} is drawn above the card it explains`);
+    // One step in from the owner's left edge, never wider than the owner: the
+    // plate is what steps in, the box keeps the column so every card in a column
+    // still starts at one x.
+    const inset = note.inset ?? 0;
+    assert.ok(inset > 0, `${note.id} is not indented from its owner`);
+    assert.equal(note.x, owner.x, `${note.id} is not aligned to its owner's column`);
+    assert.ok(note.x + note.w <= owner.x + owner.w, `${note.id} runs past its owner's right edge`);
+  }
+
+  // No note is drawn twice, and every node in the document is drawn once: a
+  // duplicated card is a second position for one anchor, which `annot verify`
+  // rejects and which makes every anchor click ambiguous.
+  const counts = new Map<string, number>();
+  for (const node of layout.nodes) counts.set(node.id, (counts.get(node.id) ?? 0) + 1);
+  assert.deepEqual([...counts].filter(([, count]) => count > 1), []);
+  assert.equal(counts.size, doc.nodes.length);
+});
+
+test('a note with no owner goes to the scope rail, not beside a step', () => {
+  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+  const orphans = layout.nodes.filter((node) => node.type === 'note' && !node.explains);
+  assert.ok(orphans.length > 0, 'the fixture has no unowned note');
+  assert.ok(orphans.every((node) => node.col === 'scope'), 'an unowned note is standing where an executable card stands');
+  const owned = new Set(layout.nodes.filter((node) => node.explains).map((node) => node.id));
+  const associations = layout.associations.filter((item) => item.from && !owned.has(item.from));
+  assert.ok(associations.length <= doc.associations.length);
 });
 
 test('a document without actions promotes context into the primary column', () => {
@@ -188,17 +241,41 @@ test('a document without actions promotes context into the primary column', () =
   }
 });
 
-test('context before the first action occupies the primary reading column', () => {
+test('context before the first action keeps its own column', () => {
   const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
   const firstAction = doc.nodes.find((node) => node.type === 'stage');
   assert.ok(firstAction, 'the fixture has no key action');
   const prelude = layout.nodes.filter((node) => node.anchor.start < firstAction.anchor.start);
-  const context = prelude.filter((node) => node.type !== 'artifact');
+  const cards = prelude.filter((node) => node.type !== 'artifact' && node.type !== 'note');
+  const notes = prelude.filter((node) => node.type === 'note');
   const artifacts = prelude.filter((node) => node.type === 'artifact');
-  assert.ok(context.length > 0, 'the fixture has no pre-action context');
-  assert.ok(context.every((node) => node.col === 'core'), 'pre-action context was pushed into the side lane');
-  assert.ok(context.every((node) => node.w >= 400), 'pre-action context stayed in a narrow card');
+  assert.ok(cards.length > 0, 'the fixture has no pre-action context');
+
+  // The prelude used to be promoted into the action column, which is how a gate
+  // ended up under a header reading 关键动作 and the real context lane was left
+  // empty. A card whose type says "context" keeps the context column wherever it
+  // stands in the file; only a document with no actions at all promotes it.
+  assert.ok(cards.every((node) => node.col === 'side'), 'pre-action context was pushed into the action lane');
   assert.ok(artifacts.every((node) => node.col === 'artifact'), 'pre-action artifacts left their result lane');
+  // Column header counts must agree with the cards actually drawn there.
+  for (const header of layout.columnHeaders) {
+    const drawn = layout.nodes.filter((node) => node.col === header.key && node.type !== 'note').length;
+    assert.ok(header.count >= drawn, `${header.key} header says ${header.count} but ${drawn} cards are drawn`);
+  }
+  // A note with no owner is not "opening context": it applies to the Skill, so
+  // it goes to the scope rail rather than standing where a step stands. A note
+  // that does have an owner rides that owner's column instead — including an
+  // artifact's notes, which stay beside the artifact.
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  for (const note of notes) {
+    if (!note.explains) {
+      assert.equal(note.col, 'scope', `${note.id} has no owner but is not on the scope rail`);
+      continue;
+    }
+    const owner = byId.get(note.explains);
+    assert.ok(owner, `${note.id} names an owner that is not drawn`);
+    assert.equal(note.col, owner.col, `${note.id} is in a third column, not its owner's`);
+  }
 });
 
 test('a phase label has a clear strip above every card', () => {
@@ -280,7 +357,10 @@ test('resolved outcome headings share a DAG layer instead of becoming a serial l
   const placed = new Map(layout.nodes.map((node) => [node.id, node]));
 
   assert.ok(fork);
-  assert.equal(layout.columns.length, 0, 'resolved branches stayed in the linear three-column layout');
+  // Branch edges used to force the whole document into the single-column stack,
+  // which threw away the lanes on exactly the skills that need them most. They
+  // now keep their columns; what a branch changes is depth, not the lane map.
+  assert.ok(layout.columns.length > 0, 'resolved branches fell back to the single-column stack');
   assert.equal(new Set(targets?.map((id) => placed.get(id)?.band)).size, 1);
   assert.ok(layout.bands.length < doc.nodes.length, 'branch outcomes still occupy consecutive bands');
   assert.equal(doc.edges.filter((edge) => edge.kind === 'sequence' && targets?.includes(edge.to)).length, 0);
