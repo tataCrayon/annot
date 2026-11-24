@@ -72,6 +72,21 @@ test('a junk label outranks a merely uncertain node', () => {
   assert.ok(junk.score > uncertain.score, `junk ${junk.score} should beat uncertain ${uncertain.score}`);
 });
 
+test('an unearned edge is a defect the audit can rank, not just a shape note', () => {
+  const gate = node({ id: 'n-gate', type: 'gate', anchor: { heading: [], start: 2, end: 2, sha: 'a'.repeat(64) } });
+  const step = node({ id: 'n-step', anchor: { heading: [], start: 1, end: 1, sha: 'a'.repeat(64) } });
+  const chained = doc([step, gate]);
+  chained.edges = [{ from: 'n-step', to: 'n-gate', kind: 'sequence' }];
+
+  const a = auditFlow(chained, 40);
+  assert.equal(a.gateEdges, 1);
+  assert.ok(a.score > 0, 'a gate threaded into the trunk scored zero');
+  // Still below a junk label: a wrong arrow is a flow defect, a blank box is a
+  // rendering defect, and the ranking has to say which is worse.
+  const junk = auditFlow(doc([node({ label: '|---|', text: '' })]), 40);
+  assert.ok(a.score < junk.score, `unearned edge ${a.score} should rank below junk ${junk.score}`);
+});
+
 test('unresolved branches are counted per branch, not per node', () => {
   const a = auditFlow(
     doc([node({ branches: [{ when: 'x' }, { when: 'y' }, { when: 'z', to: 'n-ok' }] })]),

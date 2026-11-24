@@ -110,7 +110,7 @@ export async function main(argv: string[]): Promise<number> {
     case 'workbench':
       return workbench(rest);
     case 'version':
-      process.stdout.write('annot 0.2.0\n');
+      process.stdout.write('annot 0.2.1\n');
       return 0;
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);

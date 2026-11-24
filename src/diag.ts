@@ -11,16 +11,38 @@
  * be argued with: each finding names the count it saw and what that count
  * implies. Findings never fail a build — a linear skill is allowed to be linear
  * — but a caller that asked whether the graph shows a decision can now tell.
+ *
+ * The same test applies one layer down, to the arrows. A `sequence` edge is
+ * supposed to mean "this produces what that consumes, or the same state machine
+ * moves on". The prompt now asks for that, and 40 shipped analyses showed 348
+ * edges of which 127 touched a gate and 136 jumped a `##` section — the prompt
+ * asked and was ignored, exactly as expected. The findings below are the
+ * deterministic half: they read the same `FlowDoc` the page draws and name every
+ * arrow that could not have been earned.
  */
 
 import { depthOf } from './depth.ts';
-import type { FlowDoc } from './types.ts';
+import { edgeDefectsOf, longestActionRun, type EdgeDefects } from './shape.ts';
+import type { FlowDoc, FlowNode } from './types.ts';
 
 export type Severity = 'info' | 'warn';
 
+export type FindingCode =
+  | 'forks-not-drawn'
+  | 'single-column'
+  | 'stage-dominated'
+  | 'labels-truncated'
+  | 'over-split'
+  | 'gate-on-trunk'
+  | 'flat-decision'
+  | 'endless-action-run'
+  | 'artifact-does-not-continue'
+  | 'cross-section-sequence'
+  | 'isolated-action';
+
 export interface Finding {
   /** Stable, so a caller can filter without matching prose. */
-  code: 'forks-not-drawn' | 'single-column' | 'stage-dominated' | 'labels-truncated' | 'over-split';
+  code: FindingCode;
   severity: Severity;
   message: string;
 }
@@ -35,6 +57,8 @@ export interface Diagnosis {
     branchEdges: number;
     declaredForks: number;
     truncatedLabels: number;
+    /** Edge-level counts; see {@link EdgeDefects}. */
+    edges: EdgeDefects;
   };
 }
 
@@ -106,9 +130,67 @@ export function diagnose(doc: FlowDoc): Diagnosis {
     });
   }
 
+  // The edge layer: an arrow means "this produces what that consumes, or the
+  // same state machine moves on". Everything below is a way an arrow fails to
+  // mean that. A prompt asks the model for it; these findings check it.
+  const edges = edgeDefectsOf(doc);
+
+  if (edges.gateEdges > 0) {
+    findings.push({
+      code: 'gate-on-trunk',
+      severity: 'warn',
+      message: `${edges.gateEdges} 条执行边的一端是门禁。门禁是挂在动作旁的约束，不是工序；应改成 constrains 关联。`,
+    });
+  }
+
+  if (edges.flatDecisions > 0) {
+    findings.push({
+      code: 'flat-decision',
+      severity: 'warn',
+      message: `${edges.flatDecisions} 个判定节点只有一条出路，分叉被压平成了步骤；要么补 branch/openBranches，要么改成 stage。`,
+    });
+  }
+
+  // Four in a row with no artifact, judgment or gate between them is the shape
+  // a numbered list takes when every line is connected to the next. Three is
+  // allowed: real procedures do have short runs.
+  if (edges.longestRun >= 4) {
+    const run: FlowNode[] = longestActionRun(doc).nodes;
+    findings.push({
+      code: 'endless-action-run',
+      severity: edges.longestRun >= 6 ? 'warn' : 'info',
+      message: `连续 ${edges.longestRun} 个动作没有任何产出、判定或门禁收尾：${run.slice(0, 4).map((node) => node.label.slice(0, 12)).join(' → ')}${run.length > 4 ? ' → …' : ''}`,
+    });
+  }
+
+  if (edges.artifactStems > 0) {
+    findings.push({
+      code: 'artifact-does-not-continue',
+      severity: 'info',
+      message: `${edges.artifactStems} 条执行边从产物出发。产物是这一串动作的终点，再指出下一步会把交付物伪装成工序。`,
+    });
+  }
+
+  if (edges.crossSectionEdges > 0) {
+    const titles = edges.crossedSections.slice(0, 3).map((title) => title.slice(0, 14)).join(' / ');
+    findings.push({
+      code: 'cross-section-sequence',
+      severity: 'warn',
+      message: `${edges.crossSectionEdges} 条顺序边跨了 ## 小节（进入 ${titles}${edges.crossedSections.length > 3 ? ' 等' : ''}）；并列的能力或文档章节被画成了先后。`,
+    });
+  }
+
+  if (edges.isolatedActions > 0) {
+    findings.push({
+      code: 'isolated-action',
+      severity: 'info',
+      message: `${edges.isolatedActions} 个动作没有任何执行边，图上看不出它接在哪一步，也看不出它能独立执行。`,
+    });
+  }
+
   return {
     findings,
-    measures: { nodes, bands, widestBand, branchEdges, declaredForks, truncatedLabels },
+    measures: { nodes, bands, widestBand, branchEdges, declaredForks, truncatedLabels, edges },
   };
 }
 

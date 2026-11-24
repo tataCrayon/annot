@@ -1363,7 +1363,7 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
   // states the shape so a reader is not asked to infer it from the picture.
   const shapeHtml = shape.findings.length
     ? `<ul class="plain">${shape.findings.map((f) => `<li class="${f.severity === 'warn' ? 'warn' : ''}">${esc(f.message)}</li>`).join('')}</ul>`
-    : '<p class="muted" style="margin:0">没有形状上的异常：既有判定节点，也有横向铺开的分叉。</p>';
+    : '<p class="muted" style="margin:0">没有形状上的异常：判定都能落地，连续动作都在产出或门禁处收住，没有跨小节硬连。</p>';
   const actionDisplayLabel = (label: string) => label.replace(
     /^([A-Z][A-Z0-9_]*(?:\s+[A-Z][A-Z0-9_]*)*)\s*[—–-]\s*/,
     (_match, lead: string) => `${lead.charAt(0)}${lead.slice(1).toLowerCase()}：`,
@@ -1798,7 +1798,7 @@ ${actionOverviewHtml}
       <h2>评估</h2>
       <div class="score"><b>${scored.total}</b><span>/ 100 抽取可读度</span></div>
       <p class="why">${scored.verdict}</p>
-      <p class="muted" style="margin:8px 0 0">这个数只反映抽取有没有明显缺陷（未落地分支、低置信、空正文、切得太碎），<strong>不评价 skill 本身写得好不好</strong>。与 <code>annot audit</code> 同一组权重：审计分 = 100 − 本分。</p>
+      <p class="muted" style="margin:8px 0 0">这个数只反映抽取有没有明显缺陷（未落地分支、低置信、空正文、切得太碎、没有依据的连接），<strong>不评价 skill 本身写得好不好</strong>。与 <code>annot audit</code> 同一组权重：审计分 = 100 − 本分。</p>
       ${scored.reasons.length ? `<div class="why"><ul>${scored.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
       <h2>形状</h2>
       ${shapeHtml}
@@ -1850,6 +1850,9 @@ export function scoreOf(doc: FlowDoc): { total: number; verdict: string; reasons
   }
   if (defects.unresolvedBranches > 0) {
     reasons.push(`${defects.unresolvedBranches} 个分支没有落到任何一步，−${defects.unresolvedBranches * 2}`);
+  }
+  if (defects.unearnedEdges > 0) {
+    reasons.push(`${defects.unearnedEdges} 条连接没有产出或状态推进的依据（门禁进主干、判定被压平、跨小节硬连），−${defects.unearnedEdges * 2}`);
   }
   if (defects.lowConfidence > 0) {
     reasons.push(`${defects.lowConfidence} 个步骤的分类置信度低于 60%，−${defects.lowConfidence}`);

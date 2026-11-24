@@ -3,9 +3,9 @@
 **Inspect, evaluate, and optimize Agent Skills across tools.**<br>
 把 `SKILL.md` 拆成带源码锚点的动作图，汇总整库问题，生成宿主 Agent 可执行的优化任务，并保存可比较的版本快照。
 
-[![Version](https://img.shields.io/badge/version-0.2.0-9f451f)](#快速开始)
+[![Version](https://img.shields.io/badge/version-0.2.1-9f451f)](#快速开始)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.18-2f6f4e)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-268%20passing-2f6f4e)](#隔离测试)
+[![Tests](https://img.shields.io/badge/tests-282%20passing-2f6f4e)](#隔离测试)
 [![Local first](https://img.shields.io/badge/data-local--first-9f451f)](#设计约束故意不做的事)
 [![License](https://img.shields.io/badge/license-MIT-4b5550)](LICENSE)
 
@@ -16,6 +16,7 @@
 - [界面预览](#界面预览)
 - [多工具支持](#多工具支持)
 - [核心能力](#核心能力)
+- [0.2.1 改了什么](#021-改了什么)
 - [0.2.0 改了什么](#020-改了什么)
 - [快速开始](#快速开始)
 - [从自然语言到评估闭环](#从自然语言到评估闭环)
@@ -49,12 +50,27 @@
 
 - **源码锚定**：每张动作卡绑定精确行范围与行哈希，图可以追溯到原文。
 - **AI-first 分析**：AI 判断动作、门禁、判断、产物与说明关系；CLI 负责契约校验和确定性渲染。
+- **连边必须挣来**：`sequence` 只表示产出传递或状态推进；门禁、单出口判断、无产出的长动作串、跨小节硬连都会被校验器拒绝或在「形状」栏点名，而不是画成一条好看的流水线。
 - **规范与评估分离**：加载规范、本地引用、孤立说明和结构问题可直接检查；行为效果必须运行 baseline 与 Skill 对照后才计分。
 - **诊断 → 修复任务**：未通过项直接变成带逐字摘录、行号和验收条件的宿主修复任务；`annot repair` 与网页三处入口调用同一份文本。
 - **整库评估**：一次汇总全部 Skill 的阻断和建议问题，支持筛选及 Markdown/JSON 报告导出。
 - **优化任务回环**：自动建立优化前快照，生成带报告路径、问题清单和验收要求的 Codex/DSH/ZCode 任务。
 - **版本管理**：保留 Skill 原文与内容哈希，按内容指纹合并重复记录，比较新增、修改和移除项。
 - **本地优先**：工作台只监听 `127.0.0.1`，不上传 Skill 内容，也不在浏览器里直接写 Skill 源文件。
+
+## 0.2.1 改了什么
+
+这一版只改一件事，但它是图能不能信的前提：**连边必须挣来**。
+
+- **`sequence` 边不再默认存在**。旧提示词写的是「默认按阅读顺序连 `sequence`」，于是任何编号列表都变成流水线。44 份真实分析里 348 条顺序边有 234 条跨了标题、127 条的一端是门禁；`cmdb-assistant` 把「登录 → session 过期 → 搜索任务」画成一条线，而这三步分属三套能力。现在只允许两种理由：产出传递（上一步的产物是下一步的输入）或状态推进（同一状态机里的下一步，正文写明衔接语）。
+- **判断不能只有一条出路**。判断 / 路由 / 按需加载必须建成 `decision`，且至少两条出边（`branch` 带 `when`，或写进 `openBranches`）。只有一条出边的判断等于分叉被压平。
+- **门禁不进主干**。`gate` 不得是任何边的端点，按原文顺序画在它约束的动作旁；要点名约束目标就补一条 `note` + `constrains`。
+- **产物是终点**。交付物之后不再连 `sequence`；一段连续动作没有产出、判定或门禁收尾，就该断开而不是为了好看补边。
+- **跨 `##` 小节不连顺序边**。并列能力、规则与流程、流程与输出格式之间是文档章节，不是执行先后。
+
+提示词是请求，校验器是底线。`annot annotate` 现在直接拒绝「门禁进边」「非判断节点分叉」「单出口判断」三类提案，报错会说明该怎么改；更软的缺陷（长动作串、产物续连、跨小节跳跃、孤立动作）进 `annotate` 报告尾部、产物「形状」栏、整库审计与抽取可读分，权重与 `annot audit` 共用一处。
+
+已按新契约重整 44 份存量提案：只动边和退化的判断节点，锚点与引文一字未改，全部经同一个校验器重新盖章后重出图。
 
 ## 0.2.0 改了什么
 
@@ -528,7 +544,7 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 268 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 282 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

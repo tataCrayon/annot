@@ -88,6 +88,9 @@ function extractionIssues(skill: string, file: string, audit: SkillAudit): Libra
   add('empty-text', audit.emptyText, '删除抽取中的空卡片', '张卡片没有正文，通常来自表格或代码围栏被错误切开。', 'fail');
   add('junk-labels', audit.junkLabels, '修正分隔线或标点标签', '个标签只有标点或 Markdown 装饰，不能表达动作。', 'fail');
   add('unresolved-branches', audit.unresolvedBranches, '补齐未落地的分支', '个分支没有目标；请确认目标动作，或明确它是终止条件。');
+  add('gate-on-trunk', audit.gateEdges, '把门禁移出主干', '条执行边的一端是门禁；门禁是挂在动作旁的约束，用 constrains 关联而不是连边。');
+  add('flat-decision', audit.flatDecisions, '补上判定节点的第二条出路', '个判定节点只有一条出路，分叉被压平成了步骤。');
+  add('cross-section-sequence', audit.crossSectionEdges, '拆掉跨小节的顺序边', '条顺序边跨了 ## 小节；并列的能力或文档章节被画成了先后。');
   add('low-confidence', audit.lowConfidence, '复核低置信动作', '张卡片来自低置信抽取，需要结合上下文重新分类或合并。');
   return issues;
 }

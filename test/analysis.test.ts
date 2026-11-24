@@ -48,13 +48,20 @@ function proposal(): AnalysisProposal {
     source_sha: sha,
     nodes: [
       { id: 'n-read', type: 'stage', label: 'Read the source file', start: 10, end: 10, quote: '1. Read the source file.', confidence: 0.95, reason: 'Direct action.' },
-      { id: 'n-stop', type: 'decision', label: 'Stop when evidence is missing', start: 11, end: 11, quote: '2. If evidence is missing, stop.', confidence: 0.92 },
+      // The source names one exit ("stop") and no target for the other arm, so
+      // the second way out is declared as open rather than invented. A decision
+      // with a single exit is rejected outright now; this fixture has to be a
+      // real fork or it is not a decision.
+      { id: 'n-stop', type: 'decision', label: 'Stop when evidence is missing', start: 11, end: 11, quote: '2. If evidence is missing, stop.', openBranches: ['证据齐备，继续'], confidence: 0.92 },
       { id: 'n-write', type: 'artifact', label: 'Write the report', start: 12, end: 12, quote: '3. Write the report.', lane: 'output', confidence: 0.93 },
       { id: 'n-rule', type: 'note', label: 'Preserve evidence', start: 16, end: 16, quote: 'Preserve evidence.', noteRole: 'principle', associationScope: 'skill', confidence: 0.9 },
     ],
     edges: [
       { from: 'n-read', to: 'n-stop', kind: 'sequence' },
-      { from: 'n-stop', to: 'n-write', kind: 'sequence' },
+      // "If evidence is missing, stop" is the condition that reaches the report,
+      // not a plain "and then". Drawing it as sequence was the flattened-fork
+      // shape the prompt now forbids.
+      { from: 'n-stop', to: 'n-write', kind: 'branch', when: '证据齐备，继续' },
     ],
   };
 }
@@ -66,6 +73,29 @@ test('the analysis prompt delegates semantics to AI and carries exact source anc
   assert.match(prompt, /0010 \| 1\. Read the source file\./);
   assert.match(prompt, new RegExp(parseSkill(SOURCE).sha));
   assert.match(prompt, /quote.*逐字一致/);
+});
+
+test('the analysis prompt makes an edge earn itself instead of defaulting to reading order', () => {
+  const prompt = buildAnalysisPrompt(SOURCE, 'SKILL.md');
+
+  // The old rule was "connect the steps in reading order". It turned every
+  // numbered list into a pipeline: 44 real analyses shipped 348 sequence edges,
+  // 234 of them jumping a heading. The replacement has to state the two reasons
+  // an edge is allowed to exist, or the model will fall back to the default.
+  assert.match(prompt, /连边必须挣来/);
+  assert.match(prompt, /产出传递/);
+  assert.match(prompt, /状态推进/);
+  assert.doesNotMatch(prompt, /默认按阅读顺序连/);
+
+  // Each of the five rules the user asked for, pinned by the words that make it
+  // checkable rather than by position in the prompt.
+  assert.match(prompt, /没有产出的纯动作不得续到无关动作/);
+  assert.match(prompt, /判断 \/ 路由 \/ 按需加载建 `decision`/);
+  assert.match(prompt, /只有一条出边的判断，等于把分叉压平/);
+  assert.match(prompt, /门禁永不进主链|`gate` 永不进主链/);
+  assert.match(prompt, /constrains/);
+  assert.match(prompt, /不许跨小节直接连 `sequence`/);
+  assert.match(prompt, /有交付物的动作以 `artifact` 收尾/);
 });
 
 test('an AI proposal becomes a flow without invoking the keyword classifier', () => {
@@ -81,8 +111,53 @@ test('an AI proposal becomes a flow without invoking the keyword classifier', ()
   assert.equal(doc.nodes[0].label, 'Read the source file');
   assert.equal(doc.nodes[0].raw, '1. Read the source file.');
   assert.equal(doc.nodes[3].associationScope, 'skill');
-  assert.deepEqual(doc.edges.map((edge) => edge.kind), ['sequence', 'sequence']);
+  assert.deepEqual(doc.edges.map((edge) => edge.kind), ['sequence', 'branch']);
+  assert.equal(doc.edges[1].when, '证据齐备，继续');
   assert.equal(doc.stats.maxDepth, 3);
+});
+
+test('analysis rejects a gate drawn into the trunk, and says what to do instead', () => {
+  const invalid = proposal();
+  invalid.nodes.push({
+    id: 'n-gate', type: 'gate', label: 'Never guess', start: 16, end: 16,
+    quote: 'Preserve evidence.', lane: 'reader', confidence: 0.9,
+  });
+  invalid.edges.push({ from: 'n-read', to: 'n-gate', kind: 'sequence' });
+
+  // A prompt asked for this and 40 shipped analyses broke it 127 times. The
+  // validator is the half that cannot be ignored.
+  assert.throws(
+    () => buildFlowFromAnalysis(SOURCE, invalid),
+    (error: unknown) => error instanceof AnalysisValidationError
+      && /gate is a constraint beside an action, not a step/.test(error.message)
+      && /constrains/.test(error.message),
+  );
+});
+
+test('analysis rejects a decision with one way out', () => {
+  const invalid = proposal();
+  invalid.nodes[1].openBranches = [];
+  invalid.edges = [
+    { from: 'n-read', to: 'n-stop', kind: 'sequence' },
+    { from: 'n-stop', to: 'n-write', kind: 'sequence' },
+  ];
+
+  assert.throws(
+    () => buildFlowFromAnalysis(SOURCE, invalid),
+    (error: unknown) => error instanceof AnalysisValidationError
+      && /fewer than two ways out/.test(error.message)
+      && /make it a stage/.test(error.message),
+  );
+});
+
+test('analysis rejects a branch drawn from something that is not a decision', () => {
+  const invalid = proposal();
+  invalid.edges = [{ from: 'n-read', to: 'n-write', kind: 'branch', when: '证据齐备' }];
+
+  assert.throws(
+    () => buildFlowFromAnalysis(SOURCE, invalid),
+    (error: unknown) => error instanceof AnalysisValidationError && /only a decision can branch/.test(error.message),
+  );
 });
 
 test('analysis rejects a quote that does not match its source range', () => {

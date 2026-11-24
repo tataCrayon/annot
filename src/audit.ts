@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { discoverSkills, type RootSpec } from './discover.ts';
 import { buildFlow } from './flow.ts';
 import { parseSkill } from './parse.ts';
+import { edgeDefectsOf } from './shape.ts';
 import type { FlowDoc } from './types.ts';
 
 export interface SkillAudit {
@@ -35,6 +36,12 @@ export interface SkillAudit {
   globalNotes: number;
   /** orphanNotes / noteCount. A navigation signal, not a standalone quality score. */
   orphanTextRate: number;
+  /** Arrows that could not have been earned; see {@link edgeDefectsOf}. */
+  gateEdges: number;
+  artifactStems: number;
+  flatDecisions: number;
+  crossSectionEdges: number;
+  longestRun: number;
   /** Higher is worse. This remains extraction readability, not content efficacy. */
   score: number;
   byType: Record<string, number>;
@@ -58,6 +65,8 @@ export interface Defects {
   junkLabels: number;
   /** Nodes per source line: values far above 0.5 mean the file was over-split. */
   density: number;
+  /** Edges that could not have been earned (gate in the trunk, flattened fork, …). */
+  unearnedEdges: number;
   /** Higher is worse. Zero means "nothing the extractor did is visibly broken". */
   score: number;
 }
@@ -68,26 +77,37 @@ export function defectsOf(doc: FlowDoc, lines: number): Defects {
   const emptyText = doc.nodes.filter((n) => n.text.trim().length === 0).length;
   const junkLabels = doc.nodes.filter((n) => JUNK.test(n.label) || n.label.trim().length === 0).length;
   const density = lines > 0 ? doc.nodes.length / lines : 0;
+  const edges = edgeDefectsOf(doc);
+  const unearnedEdges = edges.gateEdges + edges.flatDecisions + edges.crossSectionEdges;
 
   // Weighted so that a single junk label outranks several uncertain ones: a
-  // blank box on the canvas is a visible bug, a low confidence is a hint.
+  // blank box on the canvas is a visible bug, a low confidence is a hint. An
+  // unearned edge sits just under those: the picture is legible, the flow is
+  // not, and a wrong arrow is worse than a doubtful card.
   const score =
     junkLabels * 10 +
     emptyText * 5 +
+    unearnedEdges * 2 +
     unresolvedBranches * 2 +
     lowConfidence +
     Math.max(0, density - 0.5) * 20;
 
-  return { lowConfidence, unresolvedBranches, emptyText, junkLabels, density, score };
+  return { lowConfidence, unresolvedBranches, emptyText, junkLabels, density, unearnedEdges, score };
 }
 
 export function auditFlow(doc: FlowDoc, lines: number): Omit<SkillAudit, 'skill' | 'file'> {
   const defects = defectsOf(doc, lines);
+  const edges = edgeDefectsOf(doc);
   const coverage = doc.stats.noteCoverage ?? { total: 0, associated: 0, global: 0, unbound: 0, orphanTextRate: 0 };
   return {
     nodes: doc.nodes.length,
     edges: doc.edges.length,
     ...defects,
+    gateEdges: edges.gateEdges,
+    artifactStems: edges.artifactStems,
+    flatDecisions: edges.flatDecisions,
+    crossSectionEdges: edges.crossSectionEdges,
+    longestRun: edges.longestRun,
     orphanNotes: coverage.unbound,
     noteCount: coverage.total,
     associatedNotes: coverage.associated,
@@ -134,12 +154,13 @@ export function formatAudit(input: SkillAudit[], limit = 20): string {
   const clean = audits.filter((a) => a.score === 0).length;
   const out: string[] = [];
   out.push(`${audits.length} 个 skill，${clean} 个零瑕疵\n`);
-  out.push(`${'score'.padStart(6)}  ${'nodes'.padStart(5)}  ${'low'.padStart(3)}  ${'unres'.padStart(5)}  ${'junk'.padStart(4)}  ${'orphan'.padStart(6)}  skill`);
+  out.push(`${'score'.padStart(6)}  ${'nodes'.padStart(5)}  ${'low'.padStart(3)}  ${'unres'.padStart(5)}  ${'junk'.padStart(4)}  ${'edges'.padStart(5)}  ${'orphan'.padStart(6)}  skill`);
 
   for (const a of audits.slice(0, limit)) {
     out.push(
       `${a.score.toFixed(1).padStart(6)}  ${String(a.nodes).padStart(5)}  ${String(a.lowConfidence).padStart(3)}  ` +
-        `${String(a.unresolvedBranches).padStart(5)}  ${String(a.junkLabels).padStart(4)}  ${`${Math.round(a.orphanTextRate * 100)}%`.padStart(6)}  ${a.skill}`,
+        `${String(a.unresolvedBranches).padStart(5)}  ${String(a.junkLabels).padStart(4)}  ` +
+        `${String(a.gateEdges + a.flatDecisions + a.crossSectionEdges).padStart(5)}  ${`${Math.round(a.orphanTextRate * 100)}%`.padStart(6)}  ${a.skill}`,
     );
     if (a.junkLabels > 0 || a.emptyText > 0) {
       out.push(`        样本：${a.sample.join(' | ')}`);

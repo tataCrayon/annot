@@ -181,10 +181,15 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', opt
     '- `lane` 只能是 `reader | tool | model | output`，它决定卡片画在哪个泳道。',
     '- `confidence` 表示你对语义判断的把握，不是关键词命中率。',
     '',
-    '## 主干契约（图的骨架由你决定）',
-    '- **每一个可执行步骤都必须有节点**：Skill 用 `Step 1…N`、`Phase 1…N` 或编号小节组织流程时，这些步骤就是主干，不能用一段概览文字代替它们。',
+    '## 主干契约（连边必须挣来）',
+    '- **每一个可执行步骤都必须有节点**：Skill 用 `Step 1…N`、`Phase 1…N` 或编号小节组织流程时，这些步骤就是主干，不能用一段概览文字代替它们。有步骤不等于这些步骤连成一条线。',
     '- 章节标题本身不是节点；只有当标题后的正文确实描述一个动作时，才为「标题 + 正文」建一个 `stage`，`start` 指向正文行。',
-    '- `edges` 是主干：默认按阅读顺序连 `sequence`。缺少边，布局就只能猜顺序。',
+    '- **`sequence` 边是证据，不是默认值。** 只有两种理由能连：① 产出传递——上一步的产物就是下一步的输入；② 状态推进——同一个状态机里的下一步，正文明确写出「之后 / 再 / 下一步 / 进入 / 推进到」。两个动作只是写在同一份文件里、或者只是相邻两段，都不是连边理由。',
+    '- **纯动作不能无限串下去**：一串动作在某一步产出被消费、或者遇到判断、门禁、交付物时才结束。除上面两种理由外，**没有产出的纯动作不得续到无关动作**；宁可让它成为并行的一行，也不要补一条边让图看起来完整。',
+    '- **有交付物的动作以 `artifact` 收尾**：产物是这一串动作的终点，不再从 `artifact` 连出 `sequence`。产物之后要做什么，通常属于另一个问题。',
+    '- **不许跨小节直接连 `sequence`**：`##` 级小节之间（能力 A 与能力 B、规则与流程、流程与输出格式）默认是并列或引用关系，不是执行先后。确实存在跨小节顺序时，必须有正文写明的衔接语，并在 `reason` 里引出它。',
+    '- **判断 / 路由 / 按需加载建 `decision`，不建 `stage`。** 「判断处于哪一步」「按意图路由」「按需读取 X」这类分流动作必须有 ≥2 条出边：能落地的写 `branch` 并写 `when`，落不了地的写进该节点的 `openBranches`。**只有一条出边的判断，等于把分叉压平成了步骤**，不要这样建。',
+    '- **`gate` 永不进主链**：门禁是挂在动作旁的约束，不得出现在 `sequence` / `branch` 边的任何一端（会直接被校验拒绝）。门禁按原文顺序画在它所约束的动作旁边；要说明它约束的是哪个动作，就再写一条 `note` + `association: constrains`。',
     '- 规则密集的段落（铁律、红线、禁止项）多数是 `gate`，它们挂在所属动作旁边，**不**构成动作编号；不要因为一段话里禁止词多就把它升级成步骤。',
     '- 同一件事的多个约束合并成一个 `gate` 节点（`start`/`end` 覆盖该段），不要逐句拆成十几张卡。',
     '',
@@ -196,8 +201,10 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', opt
     '- 泳道要按真实执行者判断：命令就是命令，即使它写在 `stage` 段落里；判断就是判断，即使它写在 bash 块旁边。',
     '',
     '## 边与说明契约',
-    '- `edges` 只放真实执行关系；`sequence` 表示先后，`branch` 表示有来源证据的条件分支，并必须写 `when`。',
+    '- `edges` 只放真实执行关系；`sequence` 表示产出传递或状态推进，`branch` 表示有来源证据的条件分支，并必须写 `when`。',
     '- 没有明确目标的分支写入源节点的 `openBranches`，不要编造目标。',
+    '- 判断节点至少要有两条出边（`branch` 或 `openBranches`）；一条出边的判断说明它其实是步骤，或分叉被压平了。',
+    '- 门禁不进边；按原文顺序画在它约束的动作旁，需要点名目标时用 `note` + `constrains` 关联。',
     '- `note` 还必须给出 `noteRole`：`principle | rationale | definition | trigger | context | risk | example | reference`。',
     '- `associationScope` 只能是 `node | skill | unbound`。明确作用于整个 Skill 的原则或适用范围可标为 `skill`；无法证明目标时标为 `unbound`。',
     '- `associations.relation` 只能是 `supports | constrains | informs | explains-output`。',
@@ -359,10 +366,34 @@ export function buildFlowFromAnalysis(
   // A proposal without edges is a bag of cards: the layout has no order to draw
   // and falls back to source order, which is exactly the guessing this path
   // exists to remove. The analysis owns the graph, so it must say what follows
-  // what.
+  // what — or say that nothing does, by leaving the cards parallel on purpose.
   const executable = nodes.filter((node) => node.type !== 'note');
   if (proposal.edges.length === 0 && executable.length > 1) {
     throw new AnalysisValidationError('edges is empty: an analysis with more than one executable node must state the sequence, not leave the order to the layout');
+  }
+  // The edge rules below refuse an arrow that could not have been earned. They
+  // were findings first — 40 shipped analyses broke them 122 times without a
+  // single error — so the prompt alone is demonstrably not enough. Every node
+  // and line involved has already been verified above, so a violation is a
+  // statement about the graph, not about the evidence.
+  for (const edge of proposal.edges) {
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) continue;
+    if (from.type === 'gate' || to.type === 'gate') {
+      const gate = from.type === 'gate' ? from : to;
+      throw new AnalysisValidationError(`${edge.from} -> ${edge.to}: a gate is a constraint beside an action, not a step; drop the edge and let ${gate.id} sit beside the action it constrains (add a note with a \`constrains\` association if the target needs naming)`);
+    }
+    if (edge.kind === 'branch' && from.type !== 'decision') {
+      throw new AnalysisValidationError(`${edge.from} -> ${edge.to}: only a decision can branch; ${from.id} is a ${from.type}`);
+    }
+  }
+  for (const node of nodes) {
+    if (node.type !== 'decision') continue;
+    const ways = node.branches.length + proposal.edges.filter((edge) => edge.from === node.id && edge.kind === 'sequence').length;
+    if (ways < 2) {
+      throw new AnalysisValidationError(`${node.id}: a decision with fewer than two ways out is a step with a judgement label; add branch edges or openBranches, or make it a stage`);
+    }
   }
   for (const association of associations) {
     if (nodeById.get(association.from)?.type !== 'note') {

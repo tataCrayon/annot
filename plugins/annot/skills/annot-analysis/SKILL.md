@@ -1,6 +1,6 @@
 ---
 name: annot-analysis
-description: AI-first semantic analysis of an Agent Skill into an evidence-linked action graph. Use when a user asks to analyze, visualize, redraw, classify, diagnose, or optimize a SKILL.md flow; run annot ai-prompt, reason over the whole document, and submit the resulting JSON to annot annotate --analysis.
+description: AI-first semantic analysis of an Agent Skill into an evidence-linked action graph. Use when a user asks to analyze, visualize, redraw, classify, diagnose, or optimize a SKILL.md flow; run annot ai-prompt, reason over the whole document, and submit the resulting JSON to annot annotate --analysis. Enforces earned edges: no gate in the trunk, no flattened decisions, no cross-section pipelines.
 ---
 
 # Annot Analysis
@@ -19,17 +19,30 @@ The annot CLI owns only source anchors, schema validation, graph assembly, layou
 
 There is no rule-based fallback to reach for. `annot annotate` without `--analysis` refuses, and the webpage draws no graph, because a keyword draft cannot be distinguished from an analysis once it is on screen. `--rules` exists only for fixtures and migration.
 
-## Semantic rules
+## Edges must be earned
 
-- The trunk is yours to define. Every executable step must have a node: when the Skill is organised as `Step 1…N`, `Phase 1…N` or numbered sections, those steps are the spine and may not be replaced by one overview paragraph. A section heading is not a node by itself; build a `stage` from the heading's body text when it describes an action.
-- `edges` is the spine. Connect the steps in reading order as `sequence` unless the source says otherwise. An analysis with more than one executable node and no edges is rejected: the layout would have to guess the order, which is the guessing this path exists to remove.
+An arrow claims execution: **this produces what that consumes, or the same state machine moves on.** Two cards being adjacent in the document is not a reason to connect them.
+
+- **Only two reasons justify a `sequence` edge**: output passing (the previous step's deliverable is the next step's input) and state progression (a next step in one state machine, stated in the source as 之后 / 再 / 下一步 / 进入 / 推进到). Everything else is a parallel card, not a next step.
+- **A pure action cannot continue forever.** A run ends when a deliverable is consumed, or at a judgment, a gate, or an artifact. Without one of the two reasons above, do not chain an action to an unrelated one to make the graph look complete.
+- **End a run with `artifact`.** A deliverable is where the actions stop; do not draw a `sequence` edge out of an `artifact`. What happens to the output afterwards is a different question.
+- **Do not connect across `##` sections.** Capability A and capability B, rules and flow, flow and output format are parallel or referential. A cross-section sequence needs a connective written in the source, and the `reason` must quote it.
+- **Judgement, routing and on-demand loading become `decision`, not `stage`.** "Judge which step we are at", "route by intent", "read X on demand" are forks. A decision needs at least two ways out: `branch` edges with `when` when the target is provable, `openBranches` when it is not. **A decision with a single exit is a flattened fork** — either give it its second arm or make it a `stage`.
+- **A gate never enters the trunk.** It is neither end of a `sequence` or `branch` edge; the validator rejects it. Gates are drawn beside the action they constrain, in source order. To name which action a gate constrains, write a `note` with a `constrains` association.
 - Rule-dense passages (铁律, 红线, 禁止项) are usually `gate` cards beside the action they constrain; they are not numbered steps. Do not promote a paragraph to `stage` because it contains prohibitions, and do not split one constraint into a dozen cards — one node may span a whole rule block.
+
+These are checked, not merely requested. `annot annotate` rejects a gate in an edge, a branch from a non-decision, and a decision with one way out. `annotate` and the page also report the softer defects — long action runs, artifacts that continue, cross-section jumps — in the shape rail.
+
+## Node types
+
 - A `stage` states an action the reader, model, or tool must perform.
 - A `decision` changes the path based on evidence.
 - A `gate` states a condition that must hold or an action that must not be taken.
 - An `artifact` is a deliverable or output.
 - An `external` node invokes a tool, command, API, MCP server, or another agent.
 - A `note` explains, justifies, defines, warns, illustrates, or references execution without pretending to be an action.
+
+Every executable step still needs a node: when the Skill is organised as `Step 1…N`, `Phase 1…N` or numbered sections, those steps are the spine and may not be replaced by one overview paragraph. A section heading is not a node by itself; build a `stage` from the heading's body text when it describes an action.
 
 Use action language in labels. Preserve the source's real ordering and dependencies. Do not infer a branch merely because the source lists alternatives. A branch needs a stated condition and a defensible target.
 

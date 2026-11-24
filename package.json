@@ -1,6 +1,6 @@
 {
   "name": "annot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Annotate any agent skill: turn SKILL.md into an anchored flow graph you can inspect, diff and edit by natural language.",
   "type": "module",
   "license": "MIT",
