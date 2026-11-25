@@ -227,7 +227,7 @@
         },
         "noteCoverage": {
           "type": "object",
-          "description": "Static traceability of explanatory prose. Global notes explain the whole Skill and are not counted as orphaned.",
+          "description": "Static traceability of explanatory cards. Notes and gates both count: a gate bound to an action is traceable, a Skill-wide one is scoped, and only a note with neither is orphaned.",
           "required": [
             "total",
             "associated",
@@ -270,7 +270,7 @@
     },
     "associations": {
       "type": "array",
-      "description": "Non-execution relationships from explanatory notes to the action, gate, decision, or artifact they support.",
+      "description": "Non-execution relationships. A note points at what it explains; a gate points at the action it constrains, and every gate has exactly one such binding.",
       "items": {
         "$ref": "#/$defs/association"
       }
@@ -427,6 +427,11 @@
             ]
           }
         },
+        "topics": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What this card is about, as the analyst wrote it. Used to bind gates to the cards they govern; absent on proposals written before the field existed."
+        },
         "noteRole": {
           "enum": [
             "principle",
@@ -446,7 +451,7 @@
             "skill",
             "unbound"
           ],
-          "description": "Whether the note supports one structural node, the whole Skill, or has no defensible target."
+          "description": "Whether the card supports one structural node, the whole Skill, or has no defensible target. Gates use it too: a gate with a `constrains` association is `node`, a rule section's card is `skill`, and a gate that has neither is a defect — the binding pass in src/constraints.ts always finds one."
         }
       }
     },
@@ -470,6 +475,10 @@
         "when": {
           "type": "string",
           "description": "The guard, for a branch edge."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the edge exists, in the analysis's words; a cross-section sequence quotes the connective here and is counted as justified rather than as a defect."
         },
         "kind": {
           "enum": [

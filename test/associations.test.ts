@@ -173,7 +173,11 @@ test('flow stats expose note coverage without changing execution depth', () => {
   const layout = layoutNodes(doc);
 
   assert.ok(doc.associations.length > 0);
-  assert.equal(doc.stats.noteCoverage.total, doc.nodes.filter((item) => item.type === 'note').length);
+  // Every card that explains something is counted: notes and gates alike. A gate
+  // is a rule and was excluded, which is how a Skill with five 门禁 could report
+  // "0 已关联" while those five were the cards the page could not place.
+  const explainers = doc.nodes.filter((item) => item.type === 'note' || item.type === 'gate');
+  assert.equal(doc.stats.noteCoverage.total, explainers.length);
   assert.ok(doc.stats.noteCoverage.orphanTextRate >= 0 && doc.stats.noteCoverage.orphanTextRate <= 1);
   assert.equal(layout.associations.length, doc.associations.length);
   for (const association of layout.associations) assert.match(association.d, /^M /);

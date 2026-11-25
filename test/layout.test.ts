@@ -366,8 +366,7 @@ test('resolved outcome headings share a DAG layer instead of becoming a serial l
   assert.equal(doc.edges.filter((edge) => edge.kind === 'sequence' && targets?.includes(edge.to)).length, 0);
 });
 
-test('a table card keeps its rows instead of only its header', () => {
-  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
+test('a table card keeps its rows instead of only its header', () => {  const { doc, layout } = layoutOf('grill-method.md', 'grill-method.md');
   const byId = new Map(layout.nodes.map((n) => [n.id, n]));
   for (const node of doc.nodes) {
     const placed = byId.get(node.id);

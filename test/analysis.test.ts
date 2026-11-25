@@ -134,6 +134,70 @@ test('analysis rejects a gate drawn into the trunk, and says what to do instead'
   );
 });
 
+test('a sequence edge that leaves its chapter must quote the sentence that pays for it', () => {
+  // Two ordinary chapters in one file are parallel capabilities far more often
+  // than they are one pipeline. The prompt says so and the shape rail counts it,
+  // but only a rejection makes the analysis answer the question rather than
+  // leaving the reader to guess which of the two it was.
+  const source = ['---', 'name: cross-demo', 'description: Two chapters in one file.', '---', '', '# Cross', '', '## Collect', '', 'Collect the evidence.', '', '## Publish', '', 'Publish the report.', ''].join(String.fromCharCode(10));
+  const sha = parseSkill(source).sha;
+  const base: AnalysisProposal = {
+    schema_version: 1,
+    skill: 'cross-demo',
+    source_sha: sha,
+    nodes: [
+      { id: 'n-collect', type: 'stage', label: 'Collect the evidence', start: 10, end: 10, quote: 'Collect the evidence.', confidence: 0.9 },
+      { id: 'n-publish', type: 'artifact', label: 'Publish the report', start: 14, end: 14, quote: 'Publish the report.', confidence: 0.9 },
+    ],
+    edges: [{ from: 'n-collect', to: 'n-publish', kind: 'sequence' }],
+  };
+  assert.throws(() => buildFlowFromAnalysis(source, base), /needs a reason quoting the connective/);
+
+  const paid: AnalysisProposal = {
+    ...base,
+    edges: [{ from: 'n-collect', to: 'n-publish', kind: 'sequence', reason: 'L14「Publish the report」是这一步的产出' }],
+  };
+  const doc = buildFlowFromAnalysis(source, paid);
+  assert.equal(doc.edges[0].reason, 'L14「Publish the report」是这一步的产出');
+});
+
+test('rules are not split finer than the work they govern', () => {
+  // 52 nodes with 25 gates was the reading, and the canvas was a wall of plates
+  // with four steps behind it. A limit nobody can see is not a limit: it is
+  // checked at validation so the analysis merges same-source constraints instead
+  // of the reader merging them by eye.
+  const lines = ['---', 'name: dense-demo', 'description: One step and many rules.', '---', '', '# Dense', '', '## Flow', '', 'Do the work.', ''];
+  for (let index = 1; index <= 8; index += 1) {
+    lines.push(`- Rule ${index} must hold.`);
+  }
+  lines.push('');
+  const source = lines.join(String.fromCharCode(10));
+  const sha = parseSkill(source).sha;
+  const nodes = [
+    { id: 'n-work', type: 'stage' as const, label: 'Do the work', start: 10, end: 10, quote: 'Do the work.', confidence: 0.9 },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: `n-rule-${index}`,
+      type: 'gate' as const,
+      label: `Rule ${index + 1} must hold`,
+      start: 12 + index,
+      end: 12 + index,
+      quote: `- Rule ${index + 1} must hold.`,
+      confidence: 0.9,
+    })),
+  ];
+  const dense: AnalysisProposal = {
+    schema_version: 1,
+    skill: 'dense-demo',
+    source_sha: sha,
+    nodes,
+    edges: [{ from: 'n-work', to: 'n-more', kind: 'sequence' }],
+  };
+  // The edge itself is illegal before the gate count is reached; that is the
+  // gate-in-trunk rule doing its job, so the count is checked on a doc whose
+  // edges are legal.
+  dense.nodes.push({ id: 'n-more', type: 'stage', label: 'Do the second thing', start: 10, end: 10, quote: 'Do the work.', confidence: 0.9 });
+  assert.throws(() => buildFlowFromAnalysis(source, dense), /rules are split finer than the work they govern/);
+});
 test('analysis rejects a decision with one way out', () => {
   const invalid = proposal();
   invalid.nodes[1].openBranches = [];

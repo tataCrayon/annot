@@ -95,6 +95,36 @@ test('unresolved branches are counted per branch, not per node', () => {
   assert.equal(a.unresolvedBranches, 2);
 });
 
+// A chaptered file is a well-structured file. The rules draft links cards in
+// reading order, so it manufactures one cross-section jump per `##` boundary and
+// threads gates into the trunk. Charging those to the document made the whole
+// library report rank clean, multi-chapter skills above the ones that really are
+// hard to read — sandbox/run.sh step 6 caught it as "expected vague-demo to rank
+// first, got 'flow-demo'".
+test('a chaptered rules draft is not punished for the jumps the draft itself invented', async () => {
+  const text = [
+    '# Chaptered',
+    '',
+    '## 第一步',
+    '',
+    '读取请求并确认输入。',
+    '',
+    '## 第二步',
+    '',
+    '生成草稿并提交。',
+  ].join('\n');
+  const skill = parseSkill(text);
+  const rules = auditFlow(buildFlow(skill, text, { sourceFile: 'SKILL.md' }), skill.totalLines);
+  assert.equal(rules.crossSectionEdges > 0, true, 'the draft should have produced a cross-section jump');
+  assert.equal(rules.score, 0, `a clean chaptered draft scored ${rules.score}; the jump is the draft's, not the document's`);
+
+  // On the AI path the same jump is a claim the analysis made and had to earn,
+  // so there it does cost points — that is the path the count is for.
+  const ai = buildFlow(skill, text, { sourceFile: 'SKILL.md' });
+  ai.source.method = 'ai';
+  assert.ok(auditFlow(ai, skill.totalLines).score > 0, 'an unpaid jump in an AI graph must stay a defect');
+});
+
 test('over-splitting is penalised: one node per line is suspicious', () => {
   const dense = doc(Array.from({ length: 40 }, (_, i) => node({ id: `n-${i}`, anchor: { heading: [], start: i + 1, end: i + 1, sha: 'a'.repeat(64) } })));
   const a = auditFlow(dense, 40);

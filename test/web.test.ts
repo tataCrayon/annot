@@ -38,7 +38,9 @@ async function writeAnalysis(analysisDir: string) {
       { id: 'n-review', type: 'stage', label: 'Review the proposed method', ...at('Review the proposed method') },
       { id: 'n-keep', type: 'stage', label: 'Continue with the current method', ...at('Continue with the current method.') },
     ],
-    edges: [{ from: 'n-review', to: 'n-keep', kind: 'sequence' }],
+    // The fixture puts the two cards in different chapters, and a sequence that
+    // leaves its chapter has to quote what links them.
+    edges: [{ from: 'n-review', to: 'n-keep', kind: 'sequence', reason: 'the outcome table routes here' }],
   };
   await writeFile(join(analysisDir, 'branch-table.analysis.json'), JSON.stringify(proposal), 'utf8');
 }

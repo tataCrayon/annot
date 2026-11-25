@@ -15,7 +15,7 @@ test('ZCode plugin uses the host manifest and ships the three annot skills', () 
   assert.equal(manifest.name, 'annot-zcode');
   assert.equal(manifest.skills, 'skills');
   assert.equal(manifest.commands, 'commands');
-  assert.equal(manifest.version, '0.2.1');
+  assert.equal(manifest.version, '0.3.0');
   assert.equal(manifest.extensions, undefined);
 
   for (const name of ['annot', 'annot-analysis', 'annot-evaluation']) {

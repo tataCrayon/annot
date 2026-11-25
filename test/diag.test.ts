@@ -225,6 +225,27 @@ test('an isolated action is reported once the graph has edges to be isolated fro
   assert.equal(diagnose(noEdges).measures.edges.isolatedActions, 0, 'an edge-less graph is not six isolated nodes');
 });
 
+test('a cross-section jump the analysis paid for is counted, not condemned', () => {
+  // `api-doc-generator` says `文档生成后，做以下增强检查`: the source orders the two
+  // chapters, and quoting that sentence is the whole evidence. Counting it with
+  // the invented jumps made a correct reading look like a defect.
+  const doc = chainDoc(['stage', 'stage', 'stage']);
+  doc.sections = [
+    { id: 's0', title: '一、执行流程', level: 2, start: 1 },
+    { id: 's1', title: '二、合规增强', level: 2, start: 3 },
+  ];
+  // 1→2 is inside the first chapter (starts at 1); 2→3 is the jump.
+  doc.edges[1] = { ...doc.edges[1], reason: '「文档生成后」把两章排成一个顺序' };
+  const diagnosis = diagnose(doc);
+  assert.equal(diagnosis.measures.edges.crossSectionEdges, 0, 'a paid jump was counted as a defect');
+  assert.equal(diagnosis.measures.edges.justifiedCrossSection, 1);
+  const codes = diagnosis.findings.map((f) => f.code);
+  assert.equal(codes.includes('cross-section-sequence' as never), false);
+  const justified = diagnosis.findings.find((f) => f.code === 'cross-section-justified');
+  assert.ok(justified, `no finding; got ${codes.join(', ')}`);
+  assert.equal(justified.severity, 'info', 'a paid jump is a number, not a warning');
+});
+
 test('a graph with earned edges produces none of the edge findings', () => {
   // Two state-machine steps, a decision with two branches, a deliverable that
   // ends the run, and no crossings: this is the shape the prompt now asks for.

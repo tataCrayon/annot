@@ -38,6 +38,7 @@ export type FindingCode =
   | 'endless-action-run'
   | 'artifact-does-not-continue'
   | 'cross-section-sequence'
+  | 'cross-section-justified'
   | 'isolated-action';
 
 export interface Finding {
@@ -177,6 +178,17 @@ export function diagnose(doc: FlowDoc): Diagnosis {
       code: 'cross-section-sequence',
       severity: 'warn',
       message: `${edges.crossSectionEdges} 条顺序边跨了 ## 小节（进入 ${titles}${edges.crossedSections.length > 3 ? ' 等' : ''}）；并列的能力或文档章节被画成了先后。`,
+    });
+  }
+  // A jump the analysis paid for is reported as a number, not as a defect: the
+  // source wrote the connective (`文档生成后…`), and a reader checking the count
+  // should see how much of the flow leaves its chapter without being told it is
+  // wrong.
+  if (edges.justifiedCrossSection > 0) {
+    findings.push({
+      code: 'cross-section-justified',
+      severity: 'info',
+      message: `${edges.justifiedCrossSection} 条顺序边跨了 ## 小节，但边上有原文衔接语，按作者写的顺序保留。`,
     });
   }
 

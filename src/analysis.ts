@@ -9,6 +9,7 @@
  */
 
 import { computeFlowPhases, computeFlowStats } from './flow.ts';
+import { attachConstraints } from './constraints.ts';
 import { linesSha, parseSkill, readable, sha256, slugify, type ParsedSkill, type RawLine } from './parse.ts';
 import type {
   AssociationRelation,
@@ -41,6 +42,10 @@ export interface AnalysisNodeProposal {
   quote: string;
   lane?: Lane;
   phase?: string;
+  /** What the card is about, in the analyst's own words. */
+  topics?: string[];
+  /** For a gate: the ids of the cards this rule governs. */
+  references?: string[];
   noteRole?: NoteRole;
   associationScope?: AssociationScope;
   confidence?: number;
@@ -158,8 +163,19 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', opt
         end: 14,
         quote: '第 12–14 行的完全原文',
         lane: 'reader',
+        topics: ['取证', '公开数据'],
         confidence: 0.9,
         reason: '为什么这是动作而不是说明',
+      }, {
+        id: 'n-rule',
+        type: 'gate',
+        label: '每条数字必须带取证口径与日期',
+        start: 40,
+        end: 42,
+        quote: '第 40–42 行的完全原文',
+        lane: 'reader',
+        topics: ['取证', '数据等级'],
+        references: ['n-example'],
       }],
       edges: [{ from: 'n-example', to: 'n-next', kind: 'sequence' }],
       associations: [{
@@ -174,6 +190,8 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', opt
     '',
     '## 节点契约',
     '- `type` 只能是 `stage | decision | gate | artifact | external | note`。',
+    '- **`topics`：这张卡讲的是什么，3–5 个语义标签，用你自己的话分。** 不是从原文抄词组，是读懂之后给的分类：一张卡是「取证 / 数据分级 / 判决」，就写这三个。同一份文档里真正相关的卡会共享标签，不相干的不会。标注 `gate` 时更要写——门禁靠它找到自己管的是哪一步。',
+    '- **`references`：`gate` 专用，这条规则约束哪几张卡，写 node id 列表。** 一条规则约束三步就写三个；作用于整个 Skill 的（如「未取证不等于没问题」）留空并标 `associationScope: skill`。写了的归属优先于任何自动推断。',
     '- `stage` 是有动作证据的读者步骤；`decision` 是条件或分流；`gate` 是必须满足或禁止越过的约束；`artifact` 是输出或交付物；`external` 是工具、命令或外部系统调用；`note` 是服务执行但不能冒充动作的解释。',
     '- `start`、`end` 是 1-based 闭区间。`quote` 必须与这些行逐字一致，否则提案无效。',
     '- `id` 使用小写字母、数字、连字符或下划线，且在本文档内唯一。',
@@ -187,11 +205,11 @@ export function buildAnalysisPrompt(source: string, sourceFile = 'SKILL.md', opt
     '- **`sequence` 边是证据，不是默认值。** 只有两种理由能连：① 产出传递——上一步的产物就是下一步的输入；② 状态推进——同一个状态机里的下一步，正文明确写出「之后 / 再 / 下一步 / 进入 / 推进到」。两个动作只是写在同一份文件里、或者只是相邻两段，都不是连边理由。',
     '- **纯动作不能无限串下去**：一串动作在某一步产出被消费、或者遇到判断、门禁、交付物时才结束。除上面两种理由外，**没有产出的纯动作不得续到无关动作**；宁可让它成为并行的一行，也不要补一条边让图看起来完整。',
     '- **有交付物的动作以 `artifact` 收尾**：产物是这一串动作的终点，不再从 `artifact` 连出 `sequence`。产物之后要做什么，通常属于另一个问题。',
-    '- **不许跨小节直接连 `sequence`**：`##` 级小节之间（能力 A 与能力 B、规则与流程、流程与输出格式）默认是并列或引用关系，不是执行先后。确实存在跨小节顺序时，必须有正文写明的衔接语，并在 `reason` 里引出它。',
+    '- **不许跨小节直接连 `sequence`**：`##` 级小节之间（能力 A 与能力 B、规则与流程、流程与输出格式）默认是并列或引用关系，不是执行先后。确实存在跨小节顺序时，必须有正文写明的衔接语（「见 X」「文档生成后」「下一步」），并把那条原文写进边对象的 `reason`——没有 `reason` 的跨小节边会直接被校验拒绝。规则/门禁类小节（红线、铁律、约束）与执行流程之间的连接不算越界，不必写 `reason`。',
     '- **判断 / 路由 / 按需加载建 `decision`，不建 `stage`。** 「判断处于哪一步」「按意图路由」「按需读取 X」这类分流动作必须有 ≥2 条出边：能落地的写 `branch` 并写 `when`，落不了地的写进该节点的 `openBranches`。**只有一条出边的判断，等于把分叉压平成了步骤**，不要这样建。',
     '- **`gate` 永不进主链**：门禁是挂在动作旁的约束，不得出现在 `sequence` / `branch` 边的任何一端（会直接被校验拒绝）。门禁按原文顺序画在它所约束的动作旁边；要说明它约束的是哪个动作，就再写一条 `note` + `association: constrains`。',
     '- 规则密集的段落（铁律、红线、禁止项）多数是 `gate`，它们挂在所属动作旁边，**不**构成动作编号；不要因为一段话里禁止词多就把它升级成步骤。',
-    '- 同一件事的多个约束合并成一个 `gate` 节点（`start`/`end` 覆盖该段），不要逐句拆成十几张卡。',
+    '- 同一件事的多个约束合并成一个 `gate` 节点（`start`/`end` 覆盖该段），不要逐句拆成十几张卡。**门禁数量不得超过可执行步骤的 1.5 倍**（且至少给到 4 条）：超过就说明规则被切得比它们管的事还细，校验会直接拒绝；同一段来源拆出来的约束合并成一张。',
     '',
     '## 泳道契约',
     '- `reader`：读者自己要做的判断、检查、编辑、决策。',
@@ -336,6 +354,7 @@ export function buildFlowFromAnalysis(
       subtitle: input.subtitle,
       lane: input.lane ?? inferLane(input.type),
       phase: input.phase,
+      topics: input.topics,
       text: rawLines.map((line) => readable(line.text)).filter(Boolean).join(' ').slice(0, 400),
       raw,
       anchor: {
@@ -396,12 +415,95 @@ export function buildFlowFromAnalysis(
     }
   }
   for (const association of associations) {
-    if (nodeById.get(association.from)?.type !== 'note') {
-      throw new AnalysisValidationError(`${association.from}: associations must originate from a note`);
+    const source = nodeById.get(association.from);
+    if (source?.type !== 'note' && source?.type !== 'gate') {
+      throw new AnalysisValidationError(`${association.from}: associations must originate from a note, or from a gate binding itself to the action it constrains`);
     }
     if (nodeById.get(association.to)?.type === 'note') {
       throw new AnalysisValidationError(`${association.to}: an association target must be executable structure, not another note`);
     }
+    if (source?.type === 'gate' && association.relation !== 'constrains') {
+      throw new AnalysisValidationError(`${association.from}: a gate can only bind with a constrains association, not ${association.relation}`);
+    }
+  }
+  // A rule without an owner is drawn as a card floating over a row that has no
+  // action in it — the visible symptom was a page reporting "0 已关联" while five
+  // 门禁 cards stood on the canvas. Nothing in the page can fix that after the
+  // fact, so every gate gets an owner here.
+  const sections = skill.sections.map((section, index) => ({
+    id: `s${index}`,
+    title: section.title,
+    level: section.level,
+    start: section.startLine,
+  }));
+  // ---- The edge questions, asked with the section map in hand ----
+  // A rule chapter may precede the work it governs: `## 红线` then `## 流程` is
+  // one document making a promise, not two capabilities drawn in a row, and
+  // binding its card through `references` is how that promise is matched.
+  const RULE_CHAPTER = /规则|门禁|约束|红线|铁律|原则|信念|不可协商/;
+  const sectionAt = (line: number) => {
+    let current: (typeof sections)[number] | undefined;
+    for (const section of sections) if (section.level <= 2 && section.start <= line) current = section;
+    return current;
+  };
+  // A sequence edge that leaves its chapter is the one claim the canvas cannot
+  // check: two cards under different `##` headings look exactly like two steps
+  // of one run. The contract asks for the connector to be quoted; asking here
+  // is what makes the count in `shape.ts` (justified vs. invented) mean
+  // something, because the distinction is the sentence, not the picture.
+  for (const edge of proposal.edges) {
+    if (edge.kind !== 'sequence' || (edge.reason && edge.reason.trim())) continue;
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) continue;
+    const source = sectionAt(from.anchor.start);
+    const target = sectionAt(to.anchor.start);
+    if (!source || !target || source.start === target.start) continue;
+    if (RULE_CHAPTER.test(source.title) || RULE_CHAPTER.test(target.title)) continue;
+    throw new AnalysisValidationError(`${edge.from} -> ${edge.to}: this sequence jumps a ## chapter, so it needs a reason quoting the connective written in the source (见 / 之后 / 生成后 …). Without one it is a parallel chapter drawn as the next step`);
+  }
+
+  // The graph is only as good as the question it can answer. Gate count is a
+  // question a model can lower by merging or by writing `references`; a limit
+  // nobody can see is not a limit, so this one is checked rather than advised.
+  const executableSteps = nodes.filter((node) => node.type === 'stage' || node.type === 'decision' || node.type === 'external').length;
+  const gateCount = nodes.filter((node) => node.type === 'gate').length;
+  if (executableSteps > 0 && gateCount > Math.max(4, executableSteps * 1.5)) {
+    throw new AnalysisValidationError(
+      `${gateCount} gates against ${executableSteps} executable steps: the rules are split finer than the work they govern. Merge constraints that come from one source block into one gate (start/end may span the block), and keep one card per rule a reader applies once`,
+    );
+  }
+  if (executable.length === 0) {
+    throw new AnalysisValidationError('the analysis has no executable node: a graph of notes and rules alone cannot say what the Skill asks a reader to do');
+  }
+  // 0. The analysis said which cards each gate governs. That answer wins
+  //    outright: the model read the prose and no scoring heuristic here can. One
+  //    gate may govern several cards ("判决落地、证据分级、未取证不等于没问题"
+  //    constrains three steps), which is why the node carries a list.
+  for (const gate of nodes) {
+    if (gate.type !== 'gate') continue;
+    const declared = (proposal.nodes.find((input) => input.id === gate.id)?.references ?? [])
+      .filter((id) => nodeById.has(id) && id !== gate.id);
+    for (const id of declared) {
+      associations.push({
+        from: gate.id,
+        to: id,
+        relation: 'constrains',
+        evidence: 'ai-analysis',
+        confidence: 0.95,
+        rationale: 'the analysis named this card as one the rule governs',
+      });
+    }
+  }
+  const linked = attachConstraints(nodes, sections, associations);
+  // A rule section's card (`## 硬信念` / `## 验证清单`) constrains the Skill, not
+  // the next step. It has no owner to bind to, and leaving it looking unbound is
+  // exactly the orphan the page used to draw, so it gets its own scope: drawn on
+  // the rule lane, marked "全局", never claimed to sit beside a step.
+  for (const node of nodes) {
+    if (node.type !== 'gate' || node.associationScope === 'skill') continue;
+    if (linked.some((association) => association.from === node.id)) continue;
+    node.associationScope = 'skill';
   }
 
   return {
@@ -418,15 +520,10 @@ export function buildFlowFromAnalysis(
     schema_version: 1,
     nodes,
     edges: proposal.edges.map((edge) => ({ ...edge })),
-    associations,
-    sections: skill.sections.map((section, index) => ({
-      id: `s${index}`,
-      title: section.title,
-      level: section.level,
-      start: section.startLine,
-    })),
+    associations: linked,
+    sections,
     phases: computeFlowPhases(nodes),
-    stats: computeFlowStats(nodes, proposal.edges, associations),
+    stats: computeFlowStats(nodes, proposal.edges, linked),
   };
 }
 
@@ -459,7 +556,7 @@ function validateProposal(value: unknown): AnalysisProposal {
     if (kind === 'branch' && (typeof item.when !== 'string' || !item.when.trim())) {
       throw new AnalysisValidationError(`edges[${index}] is a branch and needs when`);
     }
-    return { from, to, kind, when: typeof item.when === 'string' ? item.when : undefined };
+    return { from, to, kind, when: typeof item.when === 'string' ? item.when : undefined, reason: optionalString(item.reason) };
   });
 
   const associationsRaw = value.associations === undefined ? [] : requireArray(value.associations, 'associations');
@@ -468,8 +565,8 @@ function validateProposal(value: unknown): AnalysisProposal {
     const from = requireString(item.from, `associations[${index}].from`);
     const to = requireString(item.to, `associations[${index}].to`);
     if (!ids.has(from) || !ids.has(to)) throw new AnalysisValidationError(`associations[${index}] references an unknown node`);
-    if (nodes.find((node) => node.id === from)?.type !== 'note') {
-      throw new AnalysisValidationError(`associations[${index}].from must be a note`);
+    if (!['note', 'gate'].includes(nodes.find((node) => node.id === from)?.type ?? '')) {
+      throw new AnalysisValidationError(`associations[${index}].from must be a note, or a gate binding itself to what it constrains`);
     }
     const relation = requireString(item.relation, `associations[${index}].relation`) as AssociationRelation;
     if (!RELATIONS.has(relation)) throw new AnalysisValidationError(`associations[${index}].relation is invalid`);
@@ -512,6 +609,10 @@ function validateNode(value: Record<string, unknown>, index: number): AnalysisNo
   if (associationScope && !SCOPES.has(associationScope)) throw new AnalysisValidationError(`nodes[${index}].associationScope is invalid`);
   if (type === 'note' && !noteRole) throw new AnalysisValidationError(`nodes[${index}] is a note and needs noteRole`);
   if (type !== 'note' && noteRole) throw new AnalysisValidationError(`nodes[${index}] is not a note but has noteRole`);
+  const topics = optionalStringArray(value.topics, `nodes[${index}].topics`);
+  if (topics && topics.length > 8) throw new AnalysisValidationError(`nodes[${index}].topics has ${topics.length} entries; three to five are enough to say what the card is about`);
+  const references = optionalStringArray(value.references, `nodes[${index}].references`);
+  if (references && type !== 'gate') throw new AnalysisValidationError(`nodes[${index}] is a ${type}; only a gate names the cards it governs`);
   return {
     id,
     type,
@@ -522,6 +623,8 @@ function validateNode(value: Record<string, unknown>, index: number): AnalysisNo
     quote,
     lane,
     phase: optionalString(value.phase),
+    topics,
+    references,
     noteRole,
     associationScope,
     confidence: optionalNumber(value.confidence, 0.8, `nodes[${index}].confidence`),

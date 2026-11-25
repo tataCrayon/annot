@@ -7,6 +7,7 @@
 import { maxDepthOf } from './depth.ts';
 import { kindOf, linesSha, readable, type ParsedSkill, type RawLine, type Unit } from './parse.ts';
 import { associateNotes } from './associations.ts';
+import { attachConstraints } from './constraints.ts';
 import type {
   Branch,
   FlowDoc,
@@ -264,7 +265,15 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
     }
   }
 
-  const associations = associateNotes(nodes, manualAssociations);
+  const sections = skill.sections.map((s, i) => ({
+    id: `s${i}`,
+    title: s.title,
+    level: s.level,
+    start: s.startLine,
+  }));
+  // A gate with no owner is a card the page cannot say anything about; the rules
+  // draft has the same obligation as the AI path, so both bind here.
+  const associations = attachConstraints(nodes, sections, associateNotes(nodes, manualAssociations));
   const edges = linkEdges(nodes);
   applyBranchTargets(nodes, edges, tableBranchSources);
   dropImplicitAlternativeSequences(nodes, edges, tableBranchSources);
@@ -284,12 +293,7 @@ export function buildFlow(skill: ParsedSkill, rawText: string, options: BuildOpt
     nodes,
     edges,
     associations,
-    sections: skill.sections.map((s, i) => ({
-      id: `s${i}`,
-      title: s.title,
-      level: s.level,
-      start: s.startLine,
-    })),
+    sections,
     phases: computeFlowPhases(nodes),
     stats,
   };
@@ -887,11 +891,19 @@ export function computeFlowStats(
   for (const n of nodes) byType[n.type]++;
   const byLane = { reader: 0, tool: 0, model: 0, output: 0 } as Record<Lane, number>;
   for (const n of nodes) byLane[n.lane]++;
-  const notes = nodes.filter((node) => node.type === 'note');
   const associatedIds = new Set(associations.map((association) => association.from));
-  const associated = notes.filter((node) => associatedIds.has(node.id)).length;
-  const global = notes.filter((node) => node.associationScope === 'skill').length;
-  const unbound = notes.filter((node) => node.associationScope === 'unbound').length;
+  // Gates count toward coverage too. A rule is a card like any other, and the
+  // header used to read "0 已关联" on a Skill holding five 门禁 while those five
+  // were exactly the cards the page could not place.
+  const explainers = nodes.filter((node) => node.type === 'note' || node.type === 'gate');
+  const associated = explainers.filter((node) => associatedIds.has(node.id)).length;
+  const global = explainers.filter((node) => node.associationScope === 'skill').length;
+  // A gate with no owner is a defect of the binding pass, not a statement about
+  // the Skill, and counting it here would report the defect as if it were the
+  // document's fault. Skipped gates still count as coverage though: the analysis
+  // said what they are for.
+  const unbound = explainers.filter((node) => node.type === 'note' && node.associationScope === 'unbound').length;
+  const counted = explainers.length;
   return {
     byType,
     byLane,
@@ -901,12 +913,12 @@ export function computeFlowStats(
     // 19-step pipeline reported 2 while the canvas drew 19 bands.
     maxDepth: maxDepthOf(nodes, edges),
     noteCoverage: {
-      total: notes.length,
+      total: counted,
       associated,
       global,
       unbound,
-      coverageRate: notes.length ? (associated + global) / notes.length : 1,
-      orphanTextRate: notes.length ? unbound / notes.length : 0,
+      coverageRate: counted ? (associated + global) / counted : 1,
+      orphanTextRate: counted ? unbound / counted : 0,
     },
   };
 }

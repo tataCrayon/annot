@@ -77,6 +77,16 @@ export interface FlowNode {
   rule?: string;
   /** Provenance of the semantic classification. */
   source?: 'extractor' | 'analysis' | 'sidecar';
+  /**
+   * What this card is about, in the analyst's own words.
+   *
+   * Written by the model, not derived from the text here. The deterministic
+   * side can count shared topics and break ties by position; it cannot tell
+   * that `判决` and `verdict` are the same idea, and an n-gram guess that says
+   * so is wrong often enough to be worse than asking. Absent on a proposal that
+   * predates this field, which is why every consumer has a positional fallback.
+   */
+  topics?: string[];
   /** More specific role for explanatory notes; absent on executable nodes. */
   noteRole?: NoteRole;
   /** Where the explanation applies after relation analysis. */
@@ -114,6 +124,16 @@ export interface FlowEdge {
   to: string;
   /** Undefined for the plain sequential edge. */
   when?: string;
+  /**
+   * Why this connection exists, in the analysis's own words.
+   *
+   * Required in practice for a `sequence` edge that jumps a `##` section: the
+   * contract says such a jump needs a connective written in the source, and this
+   * is where the analysis quotes it. Without the quote the jump is counted as a
+   * defect (see `edgeDefectsOf`); with it the jump is the author's own ordering
+   * and the count stays honest instead of punishing a correct reading.
+   */
+  reason?: string;
   kind: 'sequence' | 'branch';
 }
 
@@ -154,9 +174,9 @@ export interface FlowDoc {
       associated: number;
       global: number;
       unbound: number;
-      /** Associated or Skill-wide notes divided by all notes. */
+      /** Associated or Skill-wide explainer cards divided by all of them. */
       coverageRate: number;
-      /** Notes with no node or Skill scope divided by all notes. */
+      /** Notes with no node or Skill scope divided by all explainer cards. */
       orphanTextRate: number;
     };
   };

@@ -27,9 +27,11 @@
           "end": { "type": "integer", "minimum": 1 },
           "quote": { "type": "string", "minLength": 1 },
           "lane": { "enum": ["reader", "tool", "model", "output"] },
+          "topics": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1 }, "description": "What the card is about, in the analyst's own words (3–5 tags). Shared tags are how a rule finds the cards it governs, so this is semantic segmentation done by the model, not by character n-grams." },
+          "references": { "type": "array", "items": { "type": "string" }, "description": "Gates only: ids of the cards this rule governs. Authoritative — the binding pass never overrides it." },
           "phase": { "type": "string" },
           "noteRole": { "enum": ["principle", "rationale", "definition", "trigger", "context", "risk", "example", "reference"] },
-          "associationScope": { "enum": ["node", "skill", "unbound"] },
+          "associationScope": { "enum": ["node", "skill", "unbound"], "description": "Notes: node/skill/unbound as before. Gates: omit it unless the rule section itself speaks for the whole Skill (硬信念 / 红线 / 验证清单) — annot binds every unbound gate to the action it governs." },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "reason": { "type": "string" },
           "openBranches": { "type": "array", "items": { "type": "string", "minLength": 1 } }
@@ -46,7 +48,8 @@
           "from": { "type": "string", "minLength": 1 },
           "to": { "type": "string", "minLength": 1 },
           "kind": { "enum": ["sequence", "branch"] },
-          "when": { "type": "string" }
+          "when": { "type": "string" },
+          "reason": { "type": "string", "description": "Why this edge exists, quoting the source connective when it jumps a ## section. A sequence edge that crosses chapters without a reason is rejected." }
         }
       }
     },

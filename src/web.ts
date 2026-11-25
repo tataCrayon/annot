@@ -69,6 +69,22 @@ export function buildSignature(web = readBuildSource(WEB_SOURCE, buildOverride),
  */
 export function setBuildOverrideForTests(web?: string): void {
   buildOverride = web;
+  loadedBuild = undefined;
+}
+
+/**
+ * The stamp of the code *this process loaded*, captured once.
+ *
+ * Reading the files on every request would make a daemon compare the disk
+ * against the disk, so a process still running yesterday's renderer would
+ * report itself up to date forever — which is exactly the failure the stamp
+ * exists to catch. Capture at the moment the server starts; a later edit to
+ * `render.ts` must then show up as build ≠ currentBuild.
+ */
+let loadedBuild: string | undefined;
+
+export function loadedBuildSignature(): string {
+  return (loadedBuild ??= buildSignature());
 }
 
 const ASSETS = new Map([
@@ -104,6 +120,7 @@ export async function startWebServer(options: WebServerOptions): Promise<Running
     defaults: options.defaultRoots ?? options.roots,
     configPath: options.rootConfigPath,
     instanceId: randomUUID(),
+    build: loadedBuildSignature(),
   };
   const server = createServer((req, res) => void handleRequest(req, res, server, rootState, analysisDir, snapshotDir, reportDir, taskDir));
   await listen(server, options.port ?? 8787);
@@ -281,6 +298,8 @@ interface WebRootState {
   defaults: RootSpec[];
   configPath?: string;
   instanceId: string;
+  /** The engine this process loaded, stamped once at startup. */
+  build: string;
 }
 
 async function handleRootConfig(req: IncomingMessage, res: ServerResponse, state: WebRootState): Promise<void> {
@@ -739,7 +758,7 @@ async function sendStatus(res: ServerResponse, state: WebRootState, persisted = 
     skills: found.skills.length,
     skipped: found.skipped,
     readOnly: true,
-    build: buildSignature(),
+    build: state.build,
     evaluationMetrics: EVALUATION_METRICS,
     rootConfig: { path: state.configPath ?? null, persisted, editable: true },
   });

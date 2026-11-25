@@ -29,6 +29,15 @@ export interface EdgeDefects {
   longestRun: number;
   /** Sequence edges that jump between two ordinary `##` sections, rule sections excluded. */
   crossSectionEdges: number;
+  /**
+   * Of those jumps, the ones carrying a `reason` quoting the source connective.
+   *
+   * The contract allows a cross-section sequence when the prose states the
+   * transition. Counting both kinds together punished the analysis for reading
+   * `文档生成后，对金融接口做以下增强检查` correctly: the edge is the author's
+   * ordering, and the only defect is a jump nobody paid for.
+   */
+  justifiedCrossSection: number;
   /** Distinct sections involved in those jumps. */
   crossedSections: string[];
   /** Executable nodes with no execution edge at all, in a graph that has edges. */
@@ -125,6 +134,7 @@ export function edgeDefectsOf(doc: FlowDoc): EdgeDefects {
   let gateEdges = 0;
   let artifactStems = 0;
   let crossSectionEdges = 0;
+  let justifiedCrossSection = 0;
   const crossed = new Set<string>();
   for (const edge of doc.edges) {
     if (!edge.from || !edge.to) continue;
@@ -138,6 +148,13 @@ export function edgeDefectsOf(doc: FlowDoc): EdgeDefects {
     const target = sectionAt(doc, to.anchor.start);
     if (!source || !target || source.id === target.id) continue;
     if (isRuleSection(source) || isRuleSection(target)) continue;
+    // A jump the analysis paid for is the author's ordering, not a chapter read
+    // as a step. It is still counted, so a reader can see how much of the graph
+    // leaves its section — but only the unpaid ones are defects.
+    if (edge.reason && edge.reason.trim()) {
+      justifiedCrossSection++;
+      continue;
+    }
     crossSectionEdges++;
     crossed.add(target.title);
   }
@@ -169,6 +186,7 @@ export function edgeDefectsOf(doc: FlowDoc): EdgeDefects {
     flatDecisions,
     longestRun: longestActionRun(doc).length,
     crossSectionEdges,
+    justifiedCrossSection,
     crossedSections: [...crossed],
     isolatedActions,
   };

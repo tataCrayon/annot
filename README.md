@@ -3,9 +3,9 @@
 **Inspect, evaluate, and optimize Agent Skills across tools.**<br>
 把 `SKILL.md` 拆成带源码锚点的动作图，汇总整库问题，生成宿主 Agent 可执行的优化任务，并保存可比较的版本快照。
 
-[![Version](https://img.shields.io/badge/version-0.2.1-9f451f)](#快速开始)
+[![Version](https://img.shields.io/badge/version-0.3.0-9f451f)](#快速开始)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.18-2f6f4e)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-282%20passing-2f6f4e)](#隔离测试)
+[![Tests](https://img.shields.io/badge/tests-301%20passing-2f6f4e)](#隔离测试)
 [![Local first](https://img.shields.io/badge/data-local--first-9f451f)](#设计约束故意不做的事)
 [![License](https://img.shields.io/badge/license-MIT-4b5550)](LICENSE)
 
@@ -16,6 +16,7 @@
 - [界面预览](#界面预览)
 - [多工具支持](#多工具支持)
 - [核心能力](#核心能力)
+- [0.3.0 改了什么](#030-改了什么)
 - [0.2.1 改了什么](#021-改了什么)
 - [0.2.0 改了什么](#020-改了什么)
 - [快速开始](#快速开始)
@@ -36,6 +37,12 @@
 |---|---|
 | ![annot action timeline](docs/assets/action-timeline.png) | ![annot optimization handoff](docs/assets/optimization-task.png) |
 
+| 规则密集章节折叠 | 设计 Skill 评估 |
+|---|---|
+| ![a rule-dense chapter folded behind one card with an expand toggle](docs/assets/folded-rule-chapter.png) | ![the evaluation designer dialog with eight evaluation directions](docs/assets/evaluation-designer.png) |
+
+`## 红线`、`## 流程` 这类规则章节有六张以上卡时，页面把整章折进第一张卡，卡片上写明它代表几条规则，展开后每张卡仍在原位——折叠是视图，不是删卡，锚点一个不少。
+
 ## 多工具支持
 
 | 工具 | 接入方式 | 当前能力 |
@@ -51,6 +58,7 @@
 - **源码锚定**：每张动作卡绑定精确行范围与行哈希，图可以追溯到原文。
 - **AI-first 分析**：AI 判断动作、门禁、判断、产物与说明关系；CLI 负责契约校验和确定性渲染。
 - **连边必须挣来**：`sequence` 只表示产出传递或状态推进；门禁、单出口判断、无产出的长动作串、跨小节硬连都会被校验器拒绝或在「形状」栏点名，而不是画成一条好看的流水线。
+- **门禁必须有主人**：每条规则由分析在 `references` 里指明它约束哪几张卡，没写才按引文、标题、`topics`、位置兜底并在卡上标成推测；作用于整个 Skill 的规则进「全局规则」栏，规则密集章节折进一张卡，锚点一个不少。
 - **规范与评估分离**：加载规范、本地引用、孤立说明和结构问题可直接检查；行为效果必须运行 baseline 与 Skill 对照后才计分。
 - **诊断 → 修复任务**：未通过项直接变成带逐字摘录、行号和验收条件的宿主修复任务；`annot repair` 与网页三处入口调用同一份文本。
 - **整库评估**：一次汇总全部 Skill 的阻断和建议问题，支持筛选及 Markdown/JSON 报告导出。
@@ -58,13 +66,29 @@
 - **版本管理**：保留 Skill 原文与内容哈希，按内容指纹合并重复记录，比较新增、修改和移除项。
 - **本地优先**：工作台只监听 `127.0.0.1`，不上传 Skill 内容，也不在浏览器里直接写 Skill 源文件。
 
+## 0.3.0 改了什么
+
+0.2.1 把连边收紧了，代价是门禁没了去处：它不该进主干，但页面也没说它管哪一步。这一版补的是「门禁的归属」和三处因此暴露出来的排版问题。
+
+- **门禁有了主人，而且由分析自己指定**。`gate` 节点可以带 `references: [node id]`，写明这条规则约束哪几张卡；写了就以它为准，annot 不再二次推断。没写时才按「引文点名 → 引用的标题 → 共享 `topics` → 文档位置」逐级兜底，并把这层兜底在卡片上标成推测。规则章节的卡（`## 硬信念`、`## 红线`、`## 验证清单`）约束的是整个 Skill，标 `associationScope: "skill"` 后画进「全局规则」栏，不再假装贴在某个步骤旁边。
+- **`topics` 是模型给的分词**。每张卡带 3–5 个语义标签，这不是从原文抄的词组，而是读懂之后的分类——`判决` 和 `verdict` 是同一个标签，字符 n-gram 永远看不出来。上一版的门禁靠术语重合挂靠，产出过 `共同术语：稿每 / 字带 / 底稿每` 这种标注，现在这条词表整个删掉了：`src/constraints.ts` 只算结构与位置，语义由模型负责。
+- **门禁密度成了硬上限**。门禁数不得超过可执行步骤的 1.5 倍（且至少给到 4 条），超过就拒绝提案，并说明同一段来源里的约束要合并成一张卡。规则被切得比它管的事还细时，图读起来就是一面墙——`account-research` 曾经有 6 条红线和 15 条流程门禁，画布高 4799px。
+- **跨小节顺序边要么有衔接语，要么算缺陷**。0.2.1 让所有跨 `##` 的 `sequence` 都进缺陷计数，连原文写了「文档生成后…」的正确读法也一起罚。现在边上带 `reason` 引用那句衔接语的就是作者自己的顺序，单独计为「已说明的跨章」，规则章节（红线、铁律、约束）与流程之间的连接不算越界。
+- **规则密集章节折叠**。一个章节有六张以上同类规则卡时，页面折成「第一张卡 + 展开」，卡上写明代表几条；每一张卡仍在布局里，`annot verify` 照样能证明每个锚点画得出来，抽屉也仍能按 id 打开被折叠的那张。
+- **整库审计分清是谁的错**。规则草案按阅读顺序连边，因此会自己造出跨章跳跃并把门禁串进主干；把这些算到 Skill 头上，会让人以为结构清楚的多章节 Skill 比真正含糊的更难读（沙箱验收抓到过：`flow-demo` 14 分压过 `vague-demo` 12 分）。现在这类边上缺陷只在 AI 图里扣分——那里连边是分析做出的主张，规则草案造的跳跃仍列在报告里，但不计分。
+- **说明覆盖率把门禁算进去了**。此前页头在五张门禁同时在场时可能显示「0 已关联」，因为分母只数 `note`。现在说明与门禁都算可追踪性的分子与分母，而没有归属的门禁计入绑定缺陷，不算成文档的孤立文本。
+
+按新契约重做了全部 44 份提案：729 个节点、284 条边（279 `sequence` / 5 `branch`），213 张门禁卡中 201 张有 `constrains` 归属（94%），257 条顺序边写明了理由，未说明的跨小节跳跃为 0。`npm test` 301 条全绿，`bash sandbox/run.sh` 7 段全绿。
+
+提示词与校验的分工没变：提示词请求，校验器执行能机械判定的部分，`src/shape.ts` 报告其余。
+
 ## 0.2.1 改了什么
 
 这一版只改一件事，但它是图能不能信的前提：**连边必须挣来**。
 
 - **`sequence` 边不再默认存在**。旧提示词写的是「默认按阅读顺序连 `sequence`」，于是任何编号列表都变成流水线。44 份真实分析里 348 条顺序边有 234 条跨了标题、127 条的一端是门禁；`cmdb-assistant` 把「登录 → session 过期 → 搜索任务」画成一条线，而这三步分属三套能力。现在只允许两种理由：产出传递（上一步的产物是下一步的输入）或状态推进（同一状态机里的下一步，正文写明衔接语）。
 - **判断不能只有一条出路**。判断 / 路由 / 按需加载必须建成 `decision`，且至少两条出边（`branch` 带 `when`，或写进 `openBranches`）。只有一条出边的判断等于分叉被压平。
-- **门禁不进主干**。`gate` 不得是任何边的端点，按原文顺序画在它约束的动作旁；要点名约束目标就补一条 `note` + `constrains`。
+- **门禁不进主干**。`gate` 不得是任何边的端点，按原文顺序画在它约束的动作旁（门禁怎么找到自己的归属由 0.3.0 接手：`references` 写在门禁自己身上）。
 - **产物是终点**。交付物之后不再连 `sequence`；一段连续动作没有产出、判定或门禁收尾，就该断开而不是为了好看补边。
 - **跨 `##` 小节不连顺序边**。并列能力、规则与流程、流程与输出格式之间是文档章节，不是执行先后。
 
@@ -249,7 +273,7 @@ annot annotate path/to/my-skill \
   --out .annot/my-skill-graph
 ```
 
-AI 提案中的每个节点必须给出 `start/end` 和逐字一致的 `quote`。CLI 会拒绝源文件 hash 不匹配、引文不一致、重复 id、悬空边和自相矛盾的说明范围。确定性层只守证据边界，不替 AI 做语义分类。完整架构见 [`docs/ai-first-analysis.md`](docs/ai-first-analysis.md)。
+AI 提案中的每个节点必须给出 `start/end` 和逐字一致的 `quote`。CLI 会拒绝源文件 hash 不匹配、引文不一致、重复 id、悬空边和自相矛盾的说明范围；0.3.0 起还会拒绝没有 `reason` 的跨章 `sequence` 边，以及超过可执行步骤 1.5 倍的门禁数量。确定性层只守证据边界，不替 AI 做语义分类。完整架构见 [`docs/ai-first-analysis.md`](docs/ai-first-analysis.md)。
 
 本地网页默认从 `.annot/analyses/<skill>.analysis.json` 读取已验证提案，`annot analyze` 打印的也是这个路径——两处必须是同一个文件，否则分析写成功、页面照样空。没有提案时网页不画图：它显示「生成 AI 分析任务」空态并给出结果应写入的路径，因为一份关键词草案放到同一张画布上以后，读图的人无法分辨它是不是分析。空的提示框里也有「复制分析任务」，不需要先切到别的页面。
 
@@ -544,7 +568,7 @@ npm run web -- "D:\Users\me\.agents\skills" --port 8787
 ## 开发
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 282 个测试，当前 Node 24+ 原生跑 .ts，无需构建
+node --test test/*.test.ts test/*.test.js   # 301 个测试，当前 Node 24+ 原生跑 .ts，无需构建
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 node tools/inspect.ts <flow.json> --branches # 人眼看抽取结果（行号/类型/置信度/id/分支）
 node tools/explain.ts <SKILL.md>             # 从源文件反看抽取结果

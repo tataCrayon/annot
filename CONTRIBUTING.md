@@ -5,7 +5,7 @@
 ## 开始前
 
 ```bash
-node --test test/*.test.ts test/*.test.js   # 132 个测试
+node --test test/*.test.ts test/*.test.js   # 301 个测试
 bash sandbox/run.sh                          # 7 段隔离验收，不碰真实 ~/.agents
 ```
 

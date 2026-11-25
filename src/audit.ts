@@ -78,12 +78,18 @@ export function defectsOf(doc: FlowDoc, lines: number): Defects {
   const junkLabels = doc.nodes.filter((n) => JUNK.test(n.label) || n.label.trim().length === 0).length;
   const density = lines > 0 ? doc.nodes.length / lines : 0;
   const edges = edgeDefectsOf(doc);
-  const unearnedEdges = edges.gateEdges + edges.flatDecisions + edges.crossSectionEdges;
+  // A rules draft links consecutive cards in reading order, so it threads every
+  // gate into the trunk and turns every `##` boundary into a cross-section jump.
+  // Those arrows are the draft's own doing, not claims the document made —
+  // charging them to the skill ranked a clean multi-chapter file above a
+  // genuinely vague one (sandbox step 6: flow-demo 14 vs vague-demo 12). The
+  // AI path is where an edge is a claim the analysis had to earn, so only there
+  // does an unearned one cost points. The counts stay in the report either way;
+  // what changes is whether the score blames the document for them.
+  const unearnedEdges = doc.source.method === 'rules'
+    ? 0
+    : edges.gateEdges + edges.flatDecisions + edges.crossSectionEdges;
 
-  // Weighted so that a single junk label outranks several uncertain ones: a
-  // blank box on the canvas is a visible bug, a low confidence is a hint. An
-  // unearned edge sits just under those: the picture is legible, the flow is
-  // not, and a wrong arrow is worse than a doubtful card.
   const score =
     junkLabels * 10 +
     emptyText * 5 +

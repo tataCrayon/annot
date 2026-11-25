@@ -15,7 +15,8 @@ import vm from 'node:vm';
 
 import { buildFlow } from '../src/flow.ts';
 import { parseSkill } from '../src/parse.ts';
-import { renderHtml } from '../src/render.ts';
+import { buildFlowFromAnalysis, parseAnalysisProposal } from '../src/analysis.ts';
+import { layoutNodes, renderHtml } from '../src/render.ts';
 import type { Layout } from '../src/render.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +68,7 @@ function makeElement(tagName = 'div'): StubElement {
       return element.attrs[k] ?? null;
     },
     addEventListener() {},
+    style: {},
     querySelector: (selector = '.node') => walk(element).find((n) => n !== element && matches(n, selector)) ?? null,
     querySelectorAll: (selector = '.node') => walk(element).filter((n) => n !== element && matches(n, selector)),
   };
@@ -146,6 +148,48 @@ async function runClient(source?: string): Promise<{ svg: StubElement; panel: St
   return { svg, panel, layout: JSON.parse(layout[1]) as Layout };
 }
 
+test('a folded rule chapter is drawn once and hidden behind its anchor card', async () => {
+  // The fold is a view, not a deletion: every card still gets a group so the
+  // render check can prove its anchor is drawable, and the page hides the tail.
+  // Without this test the two halves could drift — the layout stops drawing the
+  // tail, or the client forgets to hide it — and both look like a correct graph.
+  const lines = ['# Fold', '', '## 红线', ''];
+  for (let index = 1; index <= 6; index += 1) lines.push(`${index}. 红线 ${index}：必须守住。`);
+  lines.push('', '## 流程', '', '做这件事。', '');
+  const source = lines.join(String.fromCharCode(10));
+  const sha = parseSkill(source).sha;
+  const nodes = [
+    ...Array.from({ length: 6 }, (_, index) => ({
+      id: `n-rule-${index}`,
+      type: 'gate' as const,
+      label: `红线 ${index + 1}`,
+      start: 5 + index,
+      end: 5 + index,
+      quote: `${index + 1}. 红线 ${index + 1}：必须守住。`,
+      associationScope: 'skill' as const,
+    })),
+    { id: 'n-work', type: 'stage' as const, label: '做这件事', start: 14, end: 14, quote: '做这件事。' },
+    { id: 'n-more', type: 'stage' as const, label: '再做一件事', start: 14, end: 14, quote: '做这件事。' },
+    { id: 'n-third', type: 'stage' as const, label: '第三件事', start: 14, end: 14, quote: '做这件事。' },
+    { id: 'n-fourth', type: 'stage' as const, label: '第四件事', start: 14, end: 14, quote: '做这件事。' },
+  ];
+  const doc = buildFlowFromAnalysis(source, parseAnalysisProposal(JSON.stringify({
+    schema_version: 1,
+    skill: 'unnamed-skill',
+    source_sha: sha,
+    nodes,
+    edges: [
+      { from: 'n-work', to: 'n-more', kind: 'sequence' },
+      { from: 'n-more', to: 'n-third', kind: 'sequence' },
+      { from: 'n-third', to: 'n-fourth', kind: 'sequence' },
+    ],
+  })));
+  const layout = layoutNodes(doc);
+  assert.equal(layout.nodes.length, doc.nodes.length, 'the layout dropped a folded card');
+  assert.equal(layout.folded.length, 1);
+  assert.deepEqual(layout.nodes.filter((node) => node.foldedHidden).map((node) => node.id).sort(), layout.folded[0].ids.slice().sort());
+  assert.equal(layout.nodes.find((node) => node.id === layout.folded[0].anchorId)?.foldedHidden, false, 'the anchor is hidden');
+});
 test('the client script runs without throwing and paints nodes', async () => {
   const { svg, panel } = await runClient();
   assert.ok(svg.children.length > 0, 'nothing was appended to the canvas');

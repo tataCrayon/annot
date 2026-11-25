@@ -124,6 +124,8 @@ interface Placed extends FlowNode {
   rows: string[];
   /** Guards whose target is unknown: drawn as open arms under the card. */
   arms: Array<{ label: string; w: number }>;
+  /** The card belongs to a fold group the reader has not opened yet. */
+  foldedHidden?: boolean;
 }
 
 interface PlacedEdge {
@@ -135,6 +137,8 @@ interface PlacedEdge {
   labelX: number;
   labelY: number;
   showLabel: boolean;
+  /** True when an endpoint is folded away: draw nothing until it is opened. */
+  foldedHidden?: boolean;
 }
 
 interface PlacedAssociation {
@@ -152,6 +156,15 @@ export interface Layout {
   width: number;
   height: number;
   nodes: Placed[];
+  /**
+   * Groups the context lane folded into one card.
+   *
+   * Not a hidden drawer: the folded ids are named here so the page can say
+   * "8 条规则已折叠" on the card that stands for them, and any caller that has
+   * to reach one of them knows exactly which ids stopped being drawn. Empty
+   * when nothing was dense enough to fold.
+   */
+  folded: Array<{ heading: string; count: number; ids: string[]; anchorId: string }>;
   edges: PlacedEdge[];
   associations: PlacedAssociation[];
   /** One entry per depth band, for the numbered rules the page draws. */
@@ -355,9 +368,23 @@ function columnOf(node: FlowNode): StructuralColumn {
 
 /** Where a note card belongs, given what the association pass decided about it. */
 function noteHomeOf(node: FlowNode, targetId: string | undefined): NoteHome {
-  if (node.associationScope === 'skill') return 'global';
+  if (node.type === 'note' && node.associationScope === 'skill') return 'global';
+  if (node.type === 'gate' && isGlobalRule(node)) return 'global';
   if (!targetId) return 'loose';
   return 'attached';
+}
+
+/**
+ * A rule that speaks for the whole Skill rather than for one step.
+ *
+ * `## 硬信念` / `## 红线` / `## 验证清单` are standing conditions the author puts
+ * on everything the Skill does. Drawn beside whatever step happens to share
+ * their row, they claim an attachment the source never made — on
+ * `account-research` that left a 门禁 card floating over an empty row. They get
+ * the context rail instead, in source order, labelled 全局.
+ */
+function isGlobalRule(node: FlowNode): boolean {
+  return node.type === 'gate' && node.associationScope === 'skill';
 }
 
 /**
@@ -446,7 +473,7 @@ function rowsOf(doc: FlowDoc): Row[] {
   const deferred: Array<{ node: FlowNode; target: FlowNode }> = [];
 
   for (const node of doc.nodes) {
-    if (node.type === 'note') {
+    if (node.type === 'note' || isGlobalRule(node)) {
       const target = targetOf.get(node.id);
       if (target && node.associationScope === 'node') {
         const owner = rowOf.get(target.id);
@@ -457,8 +484,9 @@ function rowsOf(doc: FlowDoc): Row[] {
         owner.notes.push({ node, targetId: target.id, col: columnOf(target) });
         continue;
       }
-      // Skill-wide and unbound notes have no owner. They go on the scope rail,
-      // in the row where the source puts them, so the rail still reads top-down.
+      // Skill-wide and unbound cards have no owner. Notes and whole-Skill rules
+      // both go on the context rail, in the row where the source puts them, so
+      // the rail still reads top-down.
       if (!current) {
         current = empty();
         rows.push(current);
@@ -534,7 +562,7 @@ const COLUMN = {
   core: { w: 440, label: '关键动作', note: '按原文顺序执行、有动作证据的事' },
   side: { w: 250, label: '判断 · 门禁 · 调用', note: '约束与依据，挂在所属动作的右边' },
   artifact: { w: 220, label: '产物', note: '动作产生的结果或交付物' },
-  scope: { w: 240, label: '全局 · 孤立说明', note: '不跟某一步走的说明，单独一条轨道' },
+  scope: { w: 240, label: '全局规则 · 说明', note: '作用于整个 Skill 的规则与说明，按原文顺序排列' },
 } as const;
 
 /**
@@ -623,11 +651,70 @@ function fallbackContextColumn(doc: FlowDoc): 'core' | undefined {
   return doc.nodes.some((node) => node.type === 'stage') ? undefined : 'core';
 }
 
+/**
+ * Group a run of same-chapter rules so the page can fold them behind one card.
+ *
+ * `account-research` puts six 红线 and fifteen 流程 gates in two chapters, and the
+ * canvas ran to 4799px because each one is a card of its own. The rules are not
+ * wrong and the count is not a defect — but a lane of twenty near-identical
+ * plates is a wall, and a reader stops at the first one.
+ *
+ * This only decides *which* cards form a group; the layout draws every card and
+ * the page hides the tail behind a toggle. Keeping every card in the layout is
+ * what lets `annot verify` still prove each one is drawable, and what lets the
+ * drawer open a folded rule by id.
+ *
+ * A rule chapter folds whole, because six rules in `## 红线` are six rules even
+ * when each one names an owner. An ordinary chapter only folds the cards nobody
+ * claimed, because those are the ones that explain no step.
+ */
+const FOLD_AT = 6;
+/** The words that make a chapter a statement of rules rather than a set of steps. */
+const RULE_CHAPTER = /规则|门禁|约束|红线|铁律|原则|信念|不可协商/;
+interface FoldGroup {
+  heading: string;
+  count: number;
+  ids: string[];
+  /**
+   * The card that stands for the group.
+   *
+   * A fold does not invent a card — it keeps the first rule of the run and
+   * leaves the rest behind a toggle. Inventing one would mean a node with no
+   * anchor, and an anchor is the one thing every card on this page has to have.
+   */
+  anchorId: string;
+}
+function foldSide(nodes: FlowNode[], column: ColumnKey): FoldGroup[] {
+  if (nodes.length === 0) return [];
+  const headingOf = (node: FlowNode) => node.anchor.heading.at(-1) ?? '';
+  const runs = new Map<string, FlowNode[]>();
+  for (const node of nodes) {
+    runs.set(headingOf(node), [...(runs.get(headingOf(node)) ?? []), node]);
+  }
+  const groups: FoldGroup[] = [];
+  for (const [heading, members] of runs) {
+    const loose = members.filter((node) => node.associationScope !== 'node' && !node.flags.includes('orphan-note'));
+    const ruleChapter = RULE_CHAPTER.test(heading);
+    const candidates = ruleChapter && members.length >= FOLD_AT ? members : loose;
+    if (candidates.length < FOLD_AT) continue;
+    const [anchor, ...rest] = candidates;
+    groups.push({ heading, count: candidates.length, ids: rest.map((node) => node.id), anchorId: anchor.id });
+  }
+  return groups;
+}
 function layoutColumns(doc: FlowDoc): Layout {
   const rows = rowsOf(doc);
   const hasActions = doc.nodes.some((node) => node.type === 'stage');
   const used = new Set<ColumnKey>();
   if (hasActions) used.add('core');
+  // Fold whole-Skill rules behind one card per rule chapter. This happens before
+  // columns are chosen, so the context lane stops being a wall: a chapter of six
+  // rules is one card plus a toggle, and the case where rules are all the
+  // document has still gets `side` because the anchor card stays visible.
+  /** Groups the page folds, declared once and drawn from the layout payload. */
+  const foldedGroups: FoldGroup[] = [];
+  /** Every card a fold hides until the reader opens the group. */
+  const foldedTail = new Set<string>();
   if (rows.some((row) => row.core && row.side.length > 0)) used.add('side');
   if (!hasActions && rows.some((row) => row.side.length > 0)) used.add('core');
   if (doc.nodes.some((node) => node.type === 'artifact')) used.add('artifact');
@@ -652,21 +739,63 @@ function layoutColumns(doc: FlowDoc): Layout {
   const bandSpans = new Map<number, { y: number; h: number }>();
   let cursorY = PAD + COLUMN_HEADER_H;
 
+  /*
+   * Where each card landed, and which row it landed in.
+   *
+   * `bottoms` is shared across rows so a successor can chain down from its
+   * predecessor even when the two are in different rows; `latestRow` /
+   * `bandEnds` let a card that follows a card in an earlier row clear that
+   * whole row instead of starting over at the top of its own.
+   */
+  /** Every card placed so far, so an edge never orders a card above its source. */
+  const bottoms = new Map<string, { y: number; h: number }>();
+  /** Row index of the card that placed each id, so a target can sit under it. */
+  const latestRow = new Map<string, number>();
+  /** Bottom of each finished row, so a card pulled down clears the row it left. */
+  const bandEnds = new Map<number, number>();
+  /**
+   * Lowest y any card has reached, across every column.
+   *
+   * A row reads as one moment only if all of its cards start at the same height.
+   * Per-column bottoms were not enough: an artifact that had to clear a tall
+   * predecessor pushed its whole row down, and the next row's core step — which
+   * only knew its own column — started `account-research`'s output row 425px
+   * above the core step in the same row, so the last two screens of the canvas
+   * were a left column and a right column with nothing between them.
+   */
+  let rowFloor = 0;
+
   rows.forEach((row, index) => {
     const cells: Cell[] = [];
+    // A fold is a *view*, decided after the layout exists: every card keeps its
+    // position, so `annot verify` can still prove every anchor is drawable and
+    // no column grows a hole where a hidden card used to stand. The page hides
+    // the tail of a long rule chapter behind the anchor card, which says how many
+    // rules it stands for.
+    const rowFoldGroups = foldSide([...row.side, ...row.notes.filter((note) => note.col === 'scope').map((note) => note.node)], contextColumn);
+    for (const group of rowFoldGroups) foldedGroups.push(group);
+    const rowAnchors = new Set(rowFoldGroups.map((group) => group.anchorId));
+    for (const group of rowFoldGroups) for (const id of group.ids) foldedTail.add(id);
     if (row.core) cells.push({ node: row.core, column: 'core', note: false });
+    const rowTop = cursorY;
     // Context keeps its own column even before the first action. It used to be
     // promoted into the action column "because there is nothing to sit beside",
     // which on a Skill that opens with rules put 22 gate and note cards under a
     // header reading 关键动作 2 and left the real context lane empty beside them.
-    for (const node of row.side) cells.push({ node, column: contextColumn, note: false });
+    for (const node of row.side) {
+      cells.push({ node, column: rowAnchors.has(node.id) ? 'side' : contextColumn, note: false });
+    }
     for (const node of row.artifacts) cells.push({ node, column: 'artifact', note: false });
     // Notes come after the cards they hang under. Their own source order still
     // decides which note sits first, but a note is never painted above its owner:
     // that would put the explanation before the thing it explains.
     for (const note of row.notes) {
-      const column = contextColumn === 'core' && (note.col === 'side' || note.col === 'core') ? 'core' : note.col;
-      cells.push({ node: note.node, column, note: true, targetId: note.targetId });
+      // A whole-Skill rule in a folded chapter is drawn beside the chapter's
+      // anchor, not on the rail: the group is what the reader sees, and the rail
+      // would otherwise repeat six cards the fold already speaks for.
+      const foldedHere = rowFoldGroups.some((group) => group.heading === (note.node.anchor.heading.at(-1) ?? ''));
+      const column = foldedHere ? 'side' : contextColumn === 'core' && (note.col === 'side' || note.col === 'core') ? 'core' : note.col;
+      cells.push({ node: note.node, column, note: !foldedHere, targetId: note.targetId });
     }
     // Source order, not column order. A row is one moment in the document, and a
     // gate can depend on the artifact above it: sorting by column would put the
@@ -675,8 +804,10 @@ function layoutColumns(doc: FlowDoc): Layout {
     cells.sort((left, right) => left.node.anchor.start - right.node.anchor.start);
 
     const columnBottoms = new Map<string, number>();
-    /** Every card placed so far, so an edge never orders a card above its source. */
-    const bottoms = new Map<string, { y: number; h: number }>();
+    /** Where the last card placed in each column ended, for notes to start under. */
+    const columnTops = new Map<string, number>();
+    /** Next free spot under each owner, so a card's second note clears its first. */
+    const notesOfOwner = new Map<string, number>();
     const geometries = new Map<string, { width: number; x: number; y: number; geo: ReturnType<typeof cardGeometry> }>();
     const geometryOf = (cell: Cell, priorY: number) => {
       const columnW = column.byKey.get(cell.column)?.w ?? COLUMN[cell.column].w;
@@ -692,16 +823,68 @@ function layoutColumns(doc: FlowDoc): Layout {
         geo: cardGeometry(cell.node, Math.max(160, columnW - inset)),
       };
     };
-    /** Place a card after everything already in its column and after its sources. */
+    /**
+     * Place a card after everything already in its column and after its sources.
+     *
+     * Two bottoms matter, and conflating them was what stacked the trunk into
+     * islands. Within a row, `columnBottoms` keeps a column's cards from
+     * overlapping; *across* rows, the card's own predecessor sets a floor, so a
+     * core step sits directly under the step that leads into it — even when that
+     * step is in the artifact column and every row between them had no core
+     * card at all. Without the second floor the step returned to the top of the
+     * row and its predecessor's edge had to fly back up the canvas to reach it.
+     */
+    /**
+     * Place a card — a step, a rule, an artifact — in its column and its row.
+     *
+     * The floors, from weakest to strongest:
+     *
+     * 1. **The row's top edge.** Every card of a row starts level unless
+     *    something forces it down. A row is one moment in the document, and a
+     *    staircase of eight cards was the alternative.
+     * 2. **Its predecessor's bottom.** A step sits under the step that leads into
+     *    it. This is what keeps a long trunk one straight line.
+     * 3. **The end of the predecessor's row.** A card whose predecessor lives in
+     *    an earlier row clears that *whole row*, not just the predecessor's own
+     *    column — otherwise the rows interleave and the canvas reads as two
+     *    unrelated columns side by side.
+     *
+     * The shared floor is applied only to foreign dependencies. Applying it to
+     * every card made each one wait for the paper above it, which is how one row
+     * of eight cards became 386px of staircase.
+     */
     const place = (cell: Cell) => {
-      const prior = columnBottoms.get(cell.column);
-      const layout = geometryOf(cell, prior === undefined ? cursorY : prior + SIBLING_GAP);
+      // The top of the column: a second card in it starts below the first. This
+      // is a floor like any other, because a card must not be painted over its
+      // own column's previous card either — the staircase came from the *notes*
+      // raising that floor, not from the cards sharing it.
+      const layout = geometryOf(cell, rowTop);
+      let floor = Math.max(rowTop, columnBottoms.get(cell.column) ?? 0);
+      // A note starts under the last card **in its own column**, not under the
+      // very last card the row placed. Its owner may be two cards up — a row can
+      // put a step, another step, then notes for both — and the bottom of the
+      // column is exactly what those notes have to clear.
+      if (cell.note) floor = Math.max(floor, columnBottoms.get(cell.column) ?? 0);
+      const predecessorRows = (incoming.get(cell.node.id) ?? []).map((id) => latestRow.get(id));
+      if (predecessorRows.some((row) => row === undefined || row < index)) {
+        floor = Math.max(floor, rowFloor);
+      }
       for (const sourceId of incoming.get(cell.node.id) ?? []) {
         const source = bottoms.get(sourceId);
-        if (source) layout.y = Math.max(layout.y, source.y + source.h + SIBLING_GAP);
+        if (source) floor = Math.max(floor, source.y + source.h + SIBLING_GAP);
       }
+      const ownRow = latestRow.get(cell.node.id);
+      if (ownRow !== undefined) {
+        const rowBottom = bandEnds.get(ownRow);
+        if (rowBottom !== undefined) floor = Math.max(floor, rowBottom + SIBLING_GAP);
+      }
+      layout.y = Math.max(layout.y, floor);
       geometries.set(cell.node.id, layout);
       bottoms.set(cell.node.id, { y: layout.y, h: layout.geo.h });
+      // Only a card raises the shared floor: a note is a remark under its owner
+      // and must not push the next card down, or one 214px remark turns a row of
+      // eight cards into 386px of staircase.
+      rowFloor = Math.max(rowFloor, layout.y);
       columnBottoms.set(cell.column, layout.y + layout.geo.h);
     };
     /**
@@ -714,12 +897,16 @@ function layoutColumns(doc: FlowDoc): Layout {
      */
     const hang = (cell: Cell) => {
       const owner = cell.targetId ? bottoms.get(cell.targetId) : undefined;
-      const bottom = columnBottoms.get(cell.column);
-      const under = owner ? owner.y + owner.h + NOTE_GAP : cursorY;
-      const y = bottom === undefined ? under : Math.max(under, bottom + NOTE_GAP);
-      const layout = geometryOf(cell, y);
+      // The note starts under the card it explains — and under any previous note
+      // of that same card, since one card can carry several remarks.
+      const under = owner ? owner.y + owner.h + NOTE_GAP : (columnBottoms.get(cell.column) ?? rowTop) + NOTE_GAP;
+      const start = Math.max(under, notesOfOwner.get(cell.targetId ?? '') ?? 0);
+      const layout = geometryOf(cell, start);
       geometries.set(cell.node.id, layout);
       bottoms.set(cell.node.id, { y: layout.y, h: layout.geo.h });
+      notesOfOwner.set(cell.targetId ?? '', layout.y + layout.geo.h + NOTE_GAP);
+      // The next card in this column must not be painted over this remark, so the
+      // note raises its column's bottom — just not the row's floor.
       columnBottoms.set(cell.column, layout.y + layout.geo.h);
     };
 
@@ -739,6 +926,18 @@ function layoutColumns(doc: FlowDoc): Layout {
       list.push(cell);
       notesUnder.set(cell.targetId, list);
     }
+    // Two passes. A row is one moment in the document, so its cards share a top
+    // edge: placing and hanging one card at a time put a step's notes ahead of
+    // the next step, and the second step then had to clear those notes — which
+    // is how a row of four cards became 500px of staircase.
+    // Card, then its notes, then the next card — in source order.
+    //
+    // A card and its remark are one unit: the remark sits directly beneath the
+    // card, and the next card in that column starts under the remark. Doing it
+    // the other way round (all cards, then all notes) put the second card on the
+    // spot the first card's notes needed, and both plates ended up at the same
+    // pixel. A row with several cards in one column and notes under them is
+    // therefore taller than a row without — that is the space the remarks take.
     for (const card of cards) {
       place(card);
       for (const note of notesUnder.get(card.node.id) ?? []) hang(note);
@@ -767,6 +966,7 @@ function layoutColumns(doc: FlowDoc): Layout {
         y: layout.y,
         w: layout.width,
         inset: layout.inset,
+        foldedHidden: foldedTail.has(cell.node.id),
       };
       placed.push(node);
     }
@@ -774,6 +974,8 @@ function layoutColumns(doc: FlowDoc): Layout {
 
     bands_.push({ index, y: cursorY, count: cells.length });
     bandSpans.set(index, { y: cursorY, h: rowH });
+    bandEnds.set(index, cursorY + rowH);
+    for (const cell of cells) latestRow.set(cell.node.id, index);
     cursorY += rowH + BAND_GAP;
   });
 
@@ -786,7 +988,11 @@ function layoutColumns(doc: FlowDoc): Layout {
     if (!a || !b || a === b) continue;
     const isBranch = edge.kind === 'branch';
     const route = routeBetween(a, b, placed, layoutBounds(column.width, canvasHeight), edges.length);
-    edges.push({ ...edge, d: route.d, labelX: route.labelX, labelY: route.labelY, showLabel: isBranch });
+    // A folded card keeps its position and loses its visibility, so an arrow to
+    // it would end in mid-air. `foldedHidden` lets the painter skip those
+    // connectors without the routes disagreeing with the geometry.
+    const hidden = a.foldedHidden || b.foldedHidden;
+    edges.push({ ...edge, d: route.d, labelX: route.labelX, labelY: route.labelY, showLabel: isBranch, foldedHidden: hidden });
   }
 
   // Headers and rails follow the same compressed columns as the cards. Naming a
@@ -805,6 +1011,7 @@ function layoutColumns(doc: FlowDoc): Layout {
     width: column.width,
     height: canvasHeight,
     nodes: placed,
+    folded: foldedGroups,
     edges,
     associations: routeAssociations(doc.associations ?? [], new Map(placed.map((node) => [node.id, node])), layoutBounds(column.width, canvasHeight), edges.length),
     bands: bands_,
@@ -894,10 +1101,15 @@ function layoutBounds(width: number, height: number): RouteBounds {
  */
 function preferredRoute(a: Placed, b: Placed): RoutePoint[] {
   if (a.col === b.col) {
-    return [
-      { x: a.x + a.w / 2, y: a.y + a.h },
-      { x: b.x + b.w / 2, y: b.y },
-    ];
+    // Straight down when the target is directly below, but an elbow when it is
+    // not: two cards in one column can be side by side (two steps in one row),
+    // and a diagonal between them cuts through the gap between the two cards
+    // above — which the layout has already decided is not a corridor.
+    const from = { x: a.x + a.w / 2, y: a.y + a.h };
+    const to = { x: b.x + b.w / 2, y: b.y };
+    if (from.x === to.x) return [from, to];
+    const mid = (from.y + to.y) / 2;
+    return [from, { x: from.x, y: mid }, { x: to.x, y: mid }, to];
   }
 
   const right = a.x < b.x;
@@ -1031,6 +1243,74 @@ function columnChannels(cards: Placed[], lane: number): number[] {
   return [...new Set(channels.map((value) => Math.round(value * 2) / 2))];
 }
 
+/**
+ * Whether a sidestep clears every card that sits between the two ends.
+ *
+ * A plain `routeHits` check also counts the two end cards, and a vertical line
+ * one gutter away from a 440px card is always within the clearance box of that
+ * card. Only cards whose vertical span overlaps the open gap can actually block
+ * the run, so those are the only ones that veto it.
+ */
+/**
+ * Whether a stack bypass is walkable.
+ *
+ * A card-level clearance test cannot answer this: a line one gutter beside a
+ * 440px card is always inside that card's clearance box, so every bypass was
+ * vetoed and the router fell back to running around the whole column. Only a
+ * crossing is a real collision here.
+ */
+function verticalClear(points: RoutePoint[], cards: Placed[], a: Placed, b: Placed): boolean {
+  return points.slice(1).every((point, index) => {
+    const from = points[index];
+    const vertical = from.x === point.x;
+    return cards.every((card) => {
+      if (card.id === a.id || card.id === b.id) return true;
+      if (vertical) {
+        const inside = card.x < from.x && from.x < card.x + card.w;
+        const overlaps = Math.max(from.y, point.y) > card.y && Math.min(from.y, point.y) < card.y + card.h;
+        return !(inside && overlaps);
+      }
+      return !segmentHitsCard(from, point, card);
+    });
+  });
+}
+
+/**
+ * A path straight down one side of the column, for two cards stacked in it.
+ *
+ * `collect -> fill` in the template Skill is two core cards at the same x with
+ * a note between them. The generic router sees a blocker and leaves through the
+ * nearest gutter, which for a core column is the whole canvas width away, so the
+ * connector ran left across every row and back. A card-width sidestep is the
+ * distance the reader actually expects.
+ */
+function columnBypass(a: Placed, b: Placed, obstacles: Placed[], lane: number): RoutePoint[][] {
+  if (a.col !== b.col || a.x !== b.x || a.w !== b.w) return [];
+  const startY = a.y + a.h;
+  const endY = b.y;
+  if (endY <= startY) return [];
+  // The gutter on the left or the column gap on the right. Two lanes each, so
+  // stacked pairs in one column do not share a line.
+  const offsets = [-10 - (lane % 2) * 4, a.w + 24 + (lane % 2) * 6];
+  const routes: RoutePoint[][] = [];
+  for (const x of [a.x + offsets[1], a.x + offsets[0]]) {
+    // A vertical run that still grazes a card is no better than the detour it
+    // replaces, so the segment is checked like any other candidate.
+    // Square the elbows: a horizontal run into a card should meet its edge,
+    // not cut diagonally across the corner.
+    const exitX = x < a.x ? a.x : a.x + a.w;
+    const entryX = x < b.x ? b.x : b.x + b.w;
+    const path = [
+      { x: exitX, y: a.y + a.h },
+      { x, y: a.y + a.h },
+      { x, y: b.y },
+      { x: entryX, y: b.y },
+    ];
+    if (verticalClear(path, obstacles, a, b)) routes.push(path);
+  }
+  return routes;
+}
+
 /** Candidate orthogonal paths through real column gutters and horizontal slabs. */
 function gutterRoutes(a: Placed, b: Placed, cards: Placed[], bounds: RouteBounds, lane: number): RoutePoint[][] {
   const right = a.x < b.x;
@@ -1113,27 +1393,45 @@ export function routeBetween(
   cards: Placed[] = [a, b],
   bounds: RouteBounds = layoutBounds(MIN_CANVAS, Number.MAX_SAFE_INTEGER),
   lane = 0,
+  obstacles: Placed[] = cards,
 ): RoutedEdge {
+  // Collisions are judged against `obstacles`, which is `cards` unless the caller
+  // has a reason to keep some cards out of the way — the gate column beside a
+  // step is one: a connector crossing it is a crossing, not a collision.
   const direct = compactRoute(preferredRoute(a, b));
-  if (routeHits(direct, cards, a, b) === 0) return routeResult(direct);
-  const blockers = directBlockers(direct, cards, a, b);
+  if (routeHits(direct, obstacles, a, b) === 0) return routeResult(direct);
+  const blockers = directBlockers(direct, obstacles, a, b);
   const candidates = [
     direct,
     ...Array.from({ length: 3 }, (_, offset) => detourRoute(a, b, blockers, true, lane + offset)),
     ...Array.from({ length: 3 }, (_, offset) => detourRoute(a, b, blockers, false, lane + offset)),
-    ...gutterRoutes(a, b, cards, bounds, lane),
+    ...gutterRoutes(a, b, obstacles, bounds, lane),
+    ...columnBypass(a, b, obstacles, lane),
   ];
   candidates.sort((left, right) => {
-    const leftHits = routeHits(left, cards, a, b);
-    const rightHits = routeHits(right, cards, a, b);
+    const leftHits = routeHits(left, obstacles, a, b);
+    const rightHits = routeHits(right, obstacles, a, b);
     if (leftHits !== rightHits) return leftHits - rightHits;
     const leftOutside = routeOutside(left, bounds);
     const rightOutside = routeOutside(right, bounds);
     if (leftOutside !== rightOutside) return leftOutside - rightOutside;
-    if (left.length !== right.length) return left.length - right.length;
-    return pathData(left).length - pathData(right).length;
+    // Geometric length, not the length of the path string: `L 592 100` and
+    // `L 592 1000` are the same number of characters, and comparing strings made
+    // the router prefer a detour to the top of the canvas over a short one.
+    const leftLength = routeLength(left);
+    const rightLength = routeLength(right);
+    if (leftLength !== rightLength) return leftLength - rightLength;
+    return 0;
   });
   return routeResult(candidates[0]);
+}
+
+function routeLength(points: RoutePoint[]): number {
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    total += Math.abs(points[index].x - points[index - 1].x) + Math.abs(points[index].y - points[index - 1].y);
+  }
+  return total;
 }
 
 /**
@@ -1216,6 +1514,7 @@ function layoutStack(doc: FlowDoc): Layout {
     width,
     height: canvasHeight,
     nodes: placed,
+    folded: [],
     edges,
     associations: routeAssociations(doc.associations ?? [], new Map(placed.map((node) => [node.id, node])), layoutBounds(width, canvasHeight), edges.length),
     bands: bands_,
@@ -1701,6 +2000,8 @@ export function renderHtml(doc: FlowDoc, options: { title?: string; embedded?: b
   .note-connector { fill: none; stroke: var(--note); stroke-width: 1.2; stroke-dasharray: 2 3; opacity: .55; }
   .note-connector.hot { opacity: 1; stroke-width: 1.6; }
   .association-label { fill: var(--muted); font-family: var(--font-mono); font-size: 9px; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }
+  .fold-toggle { fill: var(--accent-2); font-family: var(--font-mono); letter-spacing: .04em; text-decoration: underline; text-decoration-thickness: 1px; }
+  .fold-toggle:hover { fill: var(--accent); }
   .edge-label { fill: var(--accent-2); font-family: var(--font-body); font-size: 11px; paint-order: stroke; stroke: var(--paper); stroke-width: 4px; stroke-linejoin: round; }
   .stepnum { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
   .steprule { stroke: var(--rule); stroke-width: 1; }
@@ -2073,10 +2374,18 @@ for (const association of (layout.associations || [])) {
 
 for (const e of layout.edges) {
   const isBranch = e.kind === 'branch';
+  // A connector to a folded card is drawn only once the group is opened. It is
+  // created either way, carrying its endpoint ids, so opening the fold is a
+  // visibility change rather than a re-render.
   const path = svgEl('path', { d: e.d, class: 'edge' + (isBranch ? ' branch' : ''), 'data-from': e.from, 'data-to': e.to, 'marker-end': 'url(#' + (isBranch ? 'arrow-hot' : 'arrow') + ')' });
+  if (e.foldedHidden) path.style.display = 'none';
+  path.setAttribute('data-fold-hidden', e.foldedHidden ? '1' : '0');
   svg.appendChild(path);
   if (isBranch && e.showLabel && e.when) {
-    svg.appendChild(svgText(e.labelX, e.labelY, clip(e.when, 22), { class:'edge-label', 'text-anchor':'middle' }));
+    const label = svgText(e.labelX, e.labelY, clip(e.when, 22), { class:'edge-label', 'text-anchor':'middle' });
+    if (e.foldedHidden) label.style.display = 'none';
+    label.setAttribute('data-fold-hidden', e.foldedHidden ? '1' : '0');
+    svg.appendChild(label);
   }
 }
 
@@ -2117,7 +2426,11 @@ layout.nodes.forEach(function (n, nodeIndex) {
   // A note's box is its owner's column; the plate is what steps in.
   const inset = n.inset || 0;
   const w = n.w - inset;
-  const g = svgEl('g', { class:'node' + (n.home === 'attached' ? ' note-attached' : n.home ? ' note-' + n.home : ''), 'data-id': n.id, transform: 'translate(' + (n.x + inset) + ',' + n.y + ')' });
+  // The card that stands for a folded run says so: the count is a fact about
+  // the source, and a reader who sees one card where the document had six
+  // should not have to guess whether the other five were dropped.
+  const fold = (layout.folded || []).find(function (group) { return group.anchorId === n.id; });
+  const g = svgEl('g', { class:'node' + (n.home === 'attached' ? ' note-attached' : n.home ? ' note-' + n.home : '') + (fold ? ' folded' : ''), 'data-id': n.id, transform: 'translate(' + (n.x + inset) + ',' + n.y + ')' });
 
   // The plate: paper-white card, 1px ink rule, and a 3px rule on the top edge
   // carrying the node's type. Fill is not the signal — the type is.
@@ -2134,7 +2447,7 @@ layout.nodes.forEach(function (n, nodeIndex) {
   const roleName = NOTE_ROLE[n.noteRole] || '';
   const roleLabel = n.type === 'note'
     ? (n.home === 'attached' ? (relLabel ? '说明 · ' + relLabel : '说明')
-      : n.home === 'global' ? '说明 · 全局'
+      : n.home === 'global' ? (n.type === 'gate' ? '门禁 · 全局' : '说明 · 全局')
         : n.home === 'loose' ? '说明 · 孤立'
           : roleName ? '说明 · ' + roleName : '说明')
     : LABEL[n.type];
@@ -2163,7 +2476,7 @@ layout.nodes.forEach(function (n, nodeIndex) {
   const rightStatusWidth = rightStatus ? textWidthIn(rightStatus, 10.5) : 0;
   const footMaxWidth = w - ${CARD_PAD_X * 2} - (rightStatus ? rightStatusWidth + 16 : 0);
   const foot = 'L' + n.anchor.start + '–' + n.anchor.end + ' · ' + Math.round(n.confidence * 100) + '%' +
-    (n.rule ? ' · ' + n.rule : '');
+    (n.rule ? ' · ' + n.rule : '') + (fold ? ' · 折叠 ' + (fold.count - 1) + ' 张同类规则' : '');
   g.appendChild(svgText(${CARD_PAD_X}, cardH - 11, clipToWidth(foot, footMaxWidth, 10.5), { 'font-size':10.5, style: 'fill: var(--muted); font-family: var(--font-mono)' }));
 
   if (n.lane) {
@@ -2222,6 +2535,62 @@ layout.nodes.forEach(function (n, nodeIndex) {
 });
 document.getElementById('canvas').appendChild(svg);
 renderTodos();
+
+/*
+ * Folding, as a view over a card that is already drawn.
+ *
+ * A rule-dense chapter can be twenty cards tall, and every one of them is a
+ * real rule with its own anchor. Dropping them from the layout would make the
+ * page disagree with the document, so the fold is a *view*: the cards keep
+ * their positions and the group is declared once in the layout payload. The
+ * first card of the run speaks for the rest until the reader asks to see them;
+ * it is never hidden, because it is the group's own evidence. The drawer still
+ * opens any folded id by name, because folding changes the picture, not the
+ * document.
+ */
+const foldGroups = layout.folded || [];
+const foldedById = new Map();
+for (const group of foldGroups) for (const id of group.ids) foldedById.set(id, group);
+const openFolds = new Set();
+function applyFold() {
+  const visible = new Set();
+  for (const g of svg.querySelectorAll('.node')) {
+    const group = foldedById.get(g.getAttribute('data-id'));
+    const shown = !group || openFolds.has(group.anchorId);
+    g.style.display = shown ? '' : 'none';
+    if (shown) visible.add(g.getAttribute('data-id'));
+  }
+  for (const path of svg.querySelectorAll('.edge, .edge-label')) {
+    if (path.getAttribute('data-fold-hidden') !== '1') continue;
+    const both = visible.has(path.getAttribute('data-from')) && visible.has(path.getAttribute('data-to'));
+    // The edge's own endpoints decide: a folded card is hidden only when its
+    // group is closed, and an arrow to it has to follow the same rule.
+    path.style.display = both ? '' : 'none';
+  }
+}
+applyFold();
+for (const g of svg.querySelectorAll('.node.folded')) {
+  const group = foldGroups.find(function (item) { return item.anchorId === g.getAttribute('data-id'); });
+  if (!group) continue;
+  const plate = g.querySelector('rect.card');
+  if (!plate) continue;
+  const btn = svgEl('text', {
+    x: Number(plate.getAttribute('width')) - 16,
+    y: Number(plate.getAttribute('height')) - 42,
+    'text-anchor': 'end',
+    class: 'fold-toggle',
+    'font-size': 10.5,
+  });
+  btn.textContent = '展开';
+  btn.addEventListener('click', function (event) {
+    event.stopPropagation();
+    if (openFolds.has(group.anchorId)) openFolds.delete(group.anchorId);
+    else openFolds.add(group.anchorId);
+    applyFold();
+    btn.textContent = openFolds.has(group.anchorId) ? '收起' : '展开';
+  });
+  g.appendChild(btn);
+}
 
 /* Clicking the paper clears the selection — and with it the pinned trace. The
    canvas is the only place that counts as "away"; a click on the toolbar or the
@@ -2506,6 +2875,14 @@ function select(n, g, notifyParent) {
 function revealNode(id, notify) {
   const node = layout.nodes.find(function (candidate) { return candidate.id === id; });
   if (!node) return;
+  // A folded card still exists and still has a position; opening its group is
+  // what makes it reachable. A search hit on rule R4 must land on R4, not on
+  // the one card that happened to stand for the chapter.
+  const owner = foldedById.get(id);
+  if (owner && !openFolds.has(owner.anchorId)) {
+    openFolds.add(owner.anchorId);
+    applyFold();
+  }
   const groups = svg.querySelectorAll('.node');
   let group = null;
   for (let i = 0; i < groups.length; i++) {

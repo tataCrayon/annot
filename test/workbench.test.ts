@@ -75,7 +75,7 @@ test('a server whose build differs from the code on disk is reported as stale', 
   const workspace = await mkdtemp(join(tmpdir(), 'annot-workbench-build-'));
   try {
     // The override has to be in place while the daemon builds its signature,
-    // i.e. before `startWebServer`; `build` is read per request, not cached.
+    // i.e. before `startWebServer`: the stamp is captured once, at startup.
     const web = await import('../src/web.ts');
     web.setBuildOverrideForTests('stale-build');
     const server = await web.startWebServer({ roots: [], port: 0 });
@@ -99,6 +99,29 @@ test('a server whose build differs from the code on disk is reported as stale', 
   } finally {
     (await import('../src/web.ts')).setBuildOverrideForTests(undefined);
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('a running server reports the code it loaded, not what is on disk now', async () => {
+  // The bug this pins: the server hashed the files on every request, so a daemon
+  // still running yesterday's renderer answered "build == currentBuild" and
+  // `workbench open` refused to restart it. A stamp that follows the disk can
+  // never detect a stale process.
+  const web = await import('../src/web.ts');
+  web.setBuildOverrideForTests('loaded-at-startup');
+  const server = await web.startWebServer({ roots: [], port: 0 });
+  try {
+    const first = await (await fetch(`${server.url}/api/status`)).json() as { build: string };
+    // From here the code on disk is the real code again, so the running process
+    // and the disk disagree — the case a restart has to be able to see.
+    web.setBuildOverrideForTests(undefined);
+    const second = await (await fetch(`${server.url}/api/status`)).json() as { build: string };
+    assert.equal(second.build, first.build, 'the stamp followed the disk instead of the code the process loaded');
+    const { currentBuild } = await import('../src/workbench.ts');
+    assert.notEqual(second.build, currentBuild(), 'a server started from other code must not look current');
+  } finally {
+    web.setBuildOverrideForTests(undefined);
+    await server.close();
   }
 });
 

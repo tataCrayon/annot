@@ -114,7 +114,9 @@ test('an analysis lane survives into the drawn layout', () => {
       { id: 'n-run', type: 'stage' as const, label: 'Run the check', lane: 'tool' as const, ...at('Review the proposed method') },
       { id: 'n-judge', type: 'stage' as const, label: 'Judge the result', lane: 'reader' as const, ...at('Continue with the current method.') },
     ],
-    edges: [{ from: 'n-run', to: 'n-judge', kind: 'sequence' as const }],
+    // Two cards under different chapters: the contract asks which sentence links
+    // them, so this fixture says so rather than leaving a jump unpaid.
+    edges: [{ from: 'n-run', to: 'n-judge', kind: 'sequence' as const, reason: 'Continue with the result' }],
   };
   const doc = buildFlowFromAnalysis(source, proposal, { sourceFile: 'branch-table.md' });
   assert.deepEqual(doc.nodes.map((node) => node.lane), ['tool', 'reader'], 'the proposal lanes were rewritten');

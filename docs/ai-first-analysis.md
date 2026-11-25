@@ -25,12 +25,22 @@ The prompt now states the rule; `buildFlowFromAnalysis` enforces the part that c
 | gate is an endpoint of any edge | validator | rejected |
 | `branch` leaves something that is not a `decision` | validator | rejected |
 | `decision` has fewer than two ways out | validator | rejected |
+| a cross-chapter `sequence` edge has no `reason` (rule chapters exempt) | validator | rejected |
+| gates outnumber executable steps by more than 1.5× (floor of 4) | validator | rejected |
 | ≥4 executable cards in a row with no artifact, judgment or gate | `diagnose` | `endless-action-run` (info, warn at 6) |
 | a `sequence` edge leaves an `artifact` | `diagnose` | `artifact-does-not-continue` |
-| a `sequence` edge jumps between two non-rule `##` sections | `diagnose` | `cross-section-sequence` |
+| a `sequence` edge jumps between two non-rule `##` sections without a `reason` | `diagnose` | `cross-section-sequence` |
+| a `sequence` edge jumps sections and quotes the connective | `diagnose` | `cross-section-justified` (info) |
 | an executable card has no edge at all | `diagnose` | `isolated-action` |
+| a gate with no binding to what it constrains | validator | bound by `src/constraints.ts`, and marked as a guess when it had to be |
 
 The soft findings never block a build — a genuinely linear short skill is allowed to be linear — but they enter the `annotate` report, the artifact's shape rail, `annot audit`, and the readability score.
+
+## Who owns a rule
+
+A `gate` is not in the trunk, so the one thing the page has to know is which cards it governs. That answer belongs to the analysis, not to a heuristic: `references: [node id]` on the gate wins outright. When it is absent, `src/constraints.ts` tries, in order, an exact citation of a node id or label, a quoted heading, shared `topics`, then document position — and the card says the binding was inferred. `topics` is how the model does semantic segmentation (3–5 tags in its own words); the deterministic layer has no tokenizer, and an n-gram guess at Chinese words produced labels like `共同术语：稿每 / 字带 / 底稿每`.
+
+A rule chapter's card (`## 硬信念`, `## 红线`, `## 验证清单`) constrains the whole Skill rather than particular steps, so it carries `associationScope: "skill"` and is drawn on the global-rule rail instead of pretending to sit beside a step. A chapter holding six or more rule cards is folded behind its first card with an expand toggle; folding is a view — every card keeps its layout position, so `annot verify` still proves each anchor is drawable.
 
 ## Analysis flow
 
